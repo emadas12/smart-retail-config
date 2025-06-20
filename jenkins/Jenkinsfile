@@ -13,7 +13,7 @@ pipeline {
       steps {
         echo '🔄 Cloning smart-retail-dev repository...'
         dir('dev') {
-          git url: "${DEV_REPO_URL}"
+          git branch: 'main', url: "${DEV_REPO_URL}"
         }
       }
     }
