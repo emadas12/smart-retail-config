@@ -6,10 +6,6 @@ pipeline {
     TAG = "build-${env.BUILD_NUMBER}"
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
-    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
-    PRIMARY_NS = 'default'
-    DR_NS = 'dr-region'
-    KUBECONFIG = '/var/jenkins_home/.kube/config'
   }
 
   stages {
@@ -22,15 +18,6 @@ pipeline {
       }
     }
 
-    stage('Clone Config Repo') {
-      steps {
-        echo '📁 Cloning smart-retail-config repository...'
-        dir('config') {
-          git url: "${CONFIG_REPO_URL}", branch: 'main'
-        }
-      }
-    }
-
     stage('Build & Push Docker Image') {
       steps {
         echo "🐳 Building Docker image: ${IMAGE_NAME}:${TAG}"
@@ -39,63 +26,20 @@ pipeline {
             docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
               def image = docker.build("${IMAGE_NAME}:${TAG}")
               image.push()
-              image.push('latest')
+              image.push('latest')  // optional
             }
           }
         }
-      }
-    }
-
-    stage('Deploy to Primary') {
-      steps {
-        echo '🚀 Deploying to primary region...'
-        dir('config/k8s') {
-          sh "kubectl apply -f . -n ${PRIMARY_NS}"
-        }
-      }
-    }
-
-    stage('Validate Primary Deployment') {
-      steps {
-        echo '🔍 Validating primary health...'
-        sh "kubectl get pods -n ${PRIMARY_NS}"
-        sh "kubectl get svc -n ${PRIMARY_NS}"
-      }
-    }
-
-    stage('Deploy to DR Region') {
-      steps {
-        echo '🌍 Deploying to secondary (DR) region...'
-        sh "kubectl create namespace ${DR_NS} || true"
-        sh "kubectl apply -f config/k8s -n ${DR_NS}"
-      }
-    }
-
-    stage('Run Failover Test') {
-      steps {
-        echo '🔥 Running failover test on DR...'
-        sh "kubectl rollout status deployment/backend -n ${DR_NS}"
-      }
-    }
-
-    stage('Generate DR Report') {
-      steps {
-        echo '📊 Generating DR readiness report...'
-        sh """
-          kubectl get pods -n ${DR_NS} > report.txt
-          kubectl get svc -n ${DR_NS} >> report.txt
-        """
-        archiveArtifacts artifacts: 'report.txt'
       }
     }
   }
 
   post {
     success {
-      echo '✅ Full CI/CD pipeline completed successfully!'
+      echo '✅ Docker image built and pushed successfully!'
     }
     failure {
-      echo '❌ Pipeline failed. Check logs.'
+      echo '❌ Build failed. Check logs.'
     }
   }
 }
