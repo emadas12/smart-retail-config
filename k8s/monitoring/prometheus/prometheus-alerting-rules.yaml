@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alerting-rules
+  namespace: prometheus
+data:
+  alerting.rules.yml: |
+    groups:
+      - name: devops-project-alerts
+        rules:
+          - alert: HighRequestVolumeRate
+            expr: sum(rate(flask_http_request_total[1m])) > 1.66
+            for: 30s
+            labels:
+              severity: warning
+              team: devops
+            annotations:
+              summary: "⚠️ High Request Rate"
+              description: "More than 100 requests/min detected."
+
+          - alert: BackendServiceDown
+            expr: up{job="flask-backend"} == 0
+            for: 30s
+            labels:
+              severity: critical
+              team: backend
+            annotations:
+              summary: "🔥 Backend is Down"
+              description: "Prometheus cannot scrape the backend service."
+
+          - alert: High5xxErrorRate
+            expr: rate(flask_http_request_total{status=~"5.."}[1m]) > 0.5
+            for: 30s
+            labels:
+              severity: critical
+              team: backend
+            annotations:
+              summary: "🔥 5xx Error Rate is high"
+              description: "Over 0.5 5xx errors/sec. Check logs."
