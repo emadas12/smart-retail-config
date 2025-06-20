@@ -1,0 +1,21 @@
+pipeline {
+  agent any
+
+  environment {
+    IMAGE_NAME = 'rani19/backend'
+    TAG = 'latest'
+    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+    DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+  }
+
+  stages {
+    stage('📥 Clone Dev Repo') {
+      steps {
+        echo '🔄 Cloning smart-retail-dev repository...'
+        dir('dev') {
+          git url: "${DEV_REPO_URL}"
+        }
+      }
+    }
+  }
+}
