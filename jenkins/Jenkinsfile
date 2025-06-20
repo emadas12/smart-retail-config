@@ -13,7 +13,18 @@ pipeline {
       steps {
         echo '🔄 Cloning smart-retail-dev repository...'
         dir('dev') {
-          git branch: 'main', url: "${DEV_REPO_URL}"
+          git url: "${DEV_REPO_URL}", branch: 'main'
+        }
+      }
+    }
+
+    stage('🐳 Build Docker Image') {
+      steps {
+        echo '🔧 Building Docker image from backend code...'
+        dir('dev/backend') {
+          script {
+            docker.build("${IMAGE_NAME}:${TAG}")
+          }
         }
       }
     }
