@@ -9,21 +9,21 @@ pipeline {
   }
 
   stages {
-    stage('📥 Clone Dev Repo') {
+    stage('Clone Dev Repo') {
       steps {
-        echo '🔄 Cloning smart-retail-dev repository...'
+        echo 'Cloning smart-retail-dev repository...'
         dir('dev') {
           git url: "${DEV_REPO_URL}", branch: 'main'
         }
       }
     }
 
-    stage('🐳 Build Docker Image') {
+    stage('Build Docker Image') {
       steps {
-        echo '🔧 Building Docker image from backend code...'
+        echo 'Building Docker image from backend code...'
         dir('dev/backend') {
           script {
-            docker.build("${IMAGE_NAME}:${TAG}")
+            sh 'docker build -t ${IMAGE_NAME}:${TAG} .'
           }
         }
       }
