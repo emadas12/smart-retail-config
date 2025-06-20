@@ -3,7 +3,7 @@ pipeline {
 
   environment {
     IMAGE_NAME = 'rani19/backend'
-    TAG = 'latest'
+    TAG = "build-${env.BUILD_NUMBER}"
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
   }
@@ -11,22 +11,35 @@ pipeline {
   stages {
     stage('Clone Dev Repo') {
       steps {
-        echo 'Cloning smart-retail-dev repository...'
+        echo '📥 Cloning smart-retail-dev repository...'
         dir('dev') {
           git url: "${DEV_REPO_URL}", branch: 'main'
         }
       }
     }
 
-    stage('Build Docker Image') {
+    stage('Build & Push Docker Image') {
       steps {
-        echo 'Building Docker image from backend code...'
+        echo "🐳 Building Docker image: ${IMAGE_NAME}:${TAG}"
         dir('dev/backend') {
           script {
-            sh 'docker build -t ${IMAGE_NAME}:${TAG} .'
+            docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
+              def image = docker.build("${IMAGE_NAME}:${TAG}")
+              image.push()
+              image.push('latest')  // optional
+            }
           }
         }
       }
+    }
+  }
+
+  post {
+    success {
+      echo '✅ Docker image built and pushed successfully!'
+    }
+    failure {
+      echo '❌ Build failed. Check logs.'
     }
   }
 }
