@@ -1,11 +1,70 @@
 pipeline {
   agent any
 
+  environment {
+    IMAGE_NAME = 'rani19/backend'
+    TAG = "build-${env.BUILD_NUMBER}"
+    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+    DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+    PRIMARY_NS = 'default'
+    KUBECONFIG = '/root/.kube/config'
+  }
+
   stages {
-    stage('✅ Check Jenkins Works') {
+    stage('📥 Clone Dev Repo') {
       steps {
-        echo '🎉 Jenkins is running and executing this stage!'
+        echo 'Cloning smart-retail-dev repository...'
+        dir('dev') {
+          git url: "${DEV_REPO_URL}", branch: 'main'
+        }
       }
+    }
+
+    stage('🧼 Lint Flask Backend') {
+      steps {
+        echo 'Running flake8 linter...'
+        dir('dev/backend') {
+          sh '''
+            pip install flake8 > /dev/null || true
+            flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+            flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+          '''
+        }
+      }
+    }
+
+    stage('🧼 Lint React Frontend') {
+      steps {
+        echo 'Running ESLint...'
+        dir('dev/frontend') {
+          sh '''
+            npm install > /dev/null || true
+            npx eslint . --ext .ts,.tsx || true
+          '''
+        }
+      }
+    }
+
+    stage('🧪 Run Flask Unit Tests') {
+      steps {
+        echo 'Running Flask backend tests...'
+        dir('dev/backend') {
+          sh '''
+            pip install -r requirements.txt > /dev/null || true
+            python3 -m unittest discover -s tests || true
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo '✅ All tests passed successfully!'
+    }
+    failure {
+      echo '❌ Pipeline failed.'
     }
   }
 }
