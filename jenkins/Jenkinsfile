@@ -20,14 +20,33 @@ pipeline {
         }
       }
     }
+
+    stage('🔍 Lint & Test Code') {
+      steps {
+        script {
+          echo '🧪 Running flake8 for backend...'
+          dir('dev/backend') {
+            sh 'flake8 app.py || true'
+          }
+
+          echo '🧪 Running eslint for frontend...'
+          dir('dev/frontend') {
+            sh 'npm install'
+            sh 'npx eslint src --ext .ts,.tsx || true'
+          }
+
+          echo '✅ Linting done (errors ignored for now)'
+        }
+      }
+    }
   }
 
   post {
     success {
-      echo "✅ Repositories cloned successfully!"
+      echo "✅ Pipeline stage 2 finished successfully!"
     }
     failure {
-      echo "❌ Failed to clone repositories"
+      echo "❌ Linting or cloning failed."
     }
   }
 }
