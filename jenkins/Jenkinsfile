@@ -6,9 +6,6 @@ pipeline {
     TAG = "build-${env.BUILD_NUMBER}"
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
-    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
-    PRIMARY_NS = 'default'
-    DR_NS = 'dr-region'
   }
 
   stages {
@@ -21,36 +18,26 @@ pipeline {
       }
     }
 
-    stage('Build & Push Docker Image') {
+    stage('Build Docker Image') {
       steps {
+        echo '🐳 Building Docker image...'
         dir('dev/backend') {
           script {
-            docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
-              def image = docker.build("${IMAGE_NAME}:${TAG}")
-              image.push()
-              image.push('latest')
-            }
+            docker.build("${IMAGE_NAME}:${TAG}")
           }
         }
       }
     }
 
-    stage('Clone Config Repo') {
+    stage('Push Docker Image') {
       steps {
-        echo '📁 Cloning smart-retail-config repository...'
-        dir('config') {
-          git url: "${CONFIG_REPO_URL}", branch: 'main'
-        }
-      }
-    }
-
-    stage('Deploy to Kubernetes') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-          dir('config/k8s') {
-            // 💡 שים לב לנתיב הנכון
-            sh 'kubectl apply -f backend/deployment.yaml -n default'
-            sh 'kubectl apply -f backend/service.yaml -n default'
+        echo '🚀 Pushing Docker image to Docker Hub...'
+        dir('dev/backend') {
+          script {
+            docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
+              docker.image("${IMAGE_NAME}:${TAG}").push()
+              docker.image("${IMAGE_NAME}:${TAG}").push('latest')
+            }
           }
         }
       }
@@ -59,10 +46,10 @@ pipeline {
 
   post {
     success {
-      echo '✅ Build and deployment successful!'
+      echo '✅ Build and Push succeeded!'
     }
     failure {
-      echo '❌ Build failed!'
+      echo '❌ Build and Push failed.'
     }
   }
 }
