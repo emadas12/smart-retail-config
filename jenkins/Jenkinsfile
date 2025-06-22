@@ -2,68 +2,21 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME = 'rani19/backend'
-    TAG = "build-${env.BUILD_NUMBER}"
-    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-    DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
-    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+    DEV_REPO_URL = "https://github.com/RaniSaed/smart-retail-dev.git"
+    CONFIG_REPO_URL = "https://github.com/RaniSaed/smart-retail-config.git"
   }
 
   stages {
-    stage('👋 Hello') {
+    stage('📥 Clone Repositories') {
       steps {
-        echo '👋 Hello from Jenkins!'
-      }
-    }
+        echo '🔄 Cloning smart-retail-dev and smart-retail-config...'
 
-    stage('📥 Clone Dev Repo') {
-      steps {
         dir('dev') {
           git url: "${DEV_REPO_URL}", branch: 'main'
         }
-      }
-    }
 
-    stage('📥 Clone Config Repo') {
-      steps {
         dir('config') {
           git url: "${CONFIG_REPO_URL}", branch: 'main'
-        }
-      }
-    }
-
-    stage('🐍 Lint Flask Backend') {
-      steps {
-        dir('dev/backend') {
-          sh '''
-            pip install flake8 > /dev/null || true
-            flake8 . || true
-          '''
-        }
-      }
-    }
-
-    stage('🧪 Run Flask Tests') {
-      steps {
-        dir('dev/backend') {
-          sh '''
-            pip install -r requirements.txt > /dev/null || true
-            python3 -m unittest discover -s tests || true
-          '''
-        }
-      }
-    }
-
-    stage('🐳 Build & Push Docker Image') {
-      steps {
-        dir('dev/backend') {
-          withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-            sh '''
-              echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-              docker build -t $IMAGE_NAME:$TAG .
-              docker push $IMAGE_NAME:$TAG
-            '''
-          }
         }
       }
     }
@@ -71,10 +24,10 @@ pipeline {
 
   post {
     success {
-      echo '✅ Pipeline completed successfully!'
+      echo "✅ Repositories cloned successfully!"
     }
     failure {
-      echo '❌ Pipeline failed. Check logs!'
+      echo "❌ Failed to clone repositories"
     }
   }
 }
