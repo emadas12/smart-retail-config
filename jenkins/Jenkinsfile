@@ -12,43 +12,40 @@ pipeline {
   }
 
   options {
-    skipStagesAfterUnstable()
-    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '10')) // שמור רק 10 ריצות אחרונות
+    skipDefaultCheckout()
+    timeout(time: 30, unit: 'MINUTES') // מקסימום זמן להרצה
   }
 
   stages {
 
-    stage('👋 Start Pipeline') {
+    stage('👋 Start') {
       steps {
-        echo "🔧 Starting Jenkins CI/CD pipeline for build #${env.BUILD_NUMBER}"
+        echo "🚀 Pipeline started for Docker image: ${IMAGE_NAME}:${TAG}"
       }
     }
 
-    stage('📥 Clone Repositories') {
-      parallel {
-        stage('📦 Clone Dev Repo') {
-          steps {
-            dir('dev') {
-              git url: "${DEV_REPO_URL}", branch: 'main'
-            }
-          }
-        }
-
-        stage('🛠️ Clone Config Repo') {
-          steps {
-            dir('config') {
-              git url: "${CONFIG_REPO_URL}", branch: 'main'
-            }
-          }
+    stage('📥 Clone Dev Repo') {
+      steps {
+        dir('dev') {
+          git url: "${DEV_REPO_URL}", branch: 'main'
         }
       }
     }
 
-    stage('🧹 Lint Backend') {
+    stage('📥 Clone Config Repo') {
+      steps {
+        dir('config') {
+          git url: "${CONFIG_REPO_URL}", branch: 'main'
+        }
+      }
+    }
+
+    stage('🐍 Lint Flask Backend') {
       steps {
         dir('dev/backend') {
           sh '''
-            echo "🔍 Running flake8..."
+            echo "🔍 Installing flake8 and linting code..."
             pip install --break-system-packages flake8 > /dev/null || true
             flake8 . || true
           '''
@@ -56,11 +53,11 @@ pipeline {
       }
     }
 
-    stage('✅ Unit Tests') {
+    stage('🧪 Run Flask Tests') {
       steps {
         dir('dev/backend') {
           sh '''
-            echo "🧪 Installing dependencies and running unit tests..."
+            echo "🧪 Installing requirements and running unit tests..."
             pip install --break-system-packages -r requirements.txt > /dev/null || true
             python3 -m unittest discover -s tests || true
           '''
@@ -71,22 +68,16 @@ pipeline {
     stage('🐳 Build & Push Docker Image') {
       steps {
         dir('dev/backend') {
-          withCredentials([usernamePassword(
-            credentialsId: "${DOCKER_CREDENTIALS_ID}",
-            usernameVariable: 'DOCKER_USER',
-            passwordVariable: 'DOCKER_PASS'
-          )]) {
+          withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
             sh '''
-              echo "🔐 Logging in to Docker Hub..."
+              echo "🐳 Logging in to Docker Hub..."
               echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
 
-              echo "🛠️ Building image: $IMAGE_NAME:$TAG"
+              echo "📦 Building Docker image..."
               docker build -t $IMAGE_NAME:$TAG .
 
-              echo "📤 Pushing image to Docker Hub..."
+              echo "🚀 Pushing Docker image..."
               docker push $IMAGE_NAME:$TAG
-
-              echo "✅ Docker image pushed: $IMAGE_NAME:$TAG"
             '''
           }
         }
@@ -96,13 +87,10 @@ pipeline {
 
   post {
     success {
-      echo "🎉 Build #${env.BUILD_NUMBER} completed successfully and image was pushed!"
+      echo '✅ Pipeline completed successfully!'
     }
     failure {
-      echo "❌ Build #${env.BUILD_NUMBER} failed. Check logs for details."
-    }
-    always {
-      echo "📦 Pipeline finished with status: ${currentBuild.currentResult}"
+      echo '❌ Pipeline failed. Check logs for errors.'
     }
   }
 }
