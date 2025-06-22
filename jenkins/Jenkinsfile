@@ -25,9 +25,10 @@ pipeline {
       steps {
         dir('dev/backend') {
           script {
-            docker.withRegistry('', DOCKER_CREDENTIALS_ID) {
+            docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
               def image = docker.build("${IMAGE_NAME}:${TAG}")
               image.push()
+              image.push('latest')
             }
           }
         }
@@ -47,8 +48,9 @@ pipeline {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
           dir('config/k8s') {
-            sh 'kubectl apply -f backend-deployment.yaml -n default'
-            sh 'kubectl apply -f backend-service.yaml -n default'
+            // 💡 שים לב לנתיב הנכון
+            sh 'kubectl apply -f backend/deployment.yaml -n default'
+            sh 'kubectl apply -f backend/service.yaml -n default'
           }
         }
       }
@@ -56,11 +58,11 @@ pipeline {
   }
 
   post {
-    failure {
-      echo '❌ Build failed!'
-    }
     success {
       echo '✅ Build and deployment successful!'
+    }
+    failure {
+      echo '❌ Build failed!'
     }
   }
 }
