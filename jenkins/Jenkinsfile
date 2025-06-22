@@ -2,11 +2,17 @@ pipeline {
   agent any
 
   environment {
+    IMAGE_NAME = 'rani19/backend'
+    TAG = "build-${env.BUILD_NUMBER}"
+    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+    PRIMARY_NS = 'default'
+    KUBECONFIG = '/root/.kube/config'
   }
 
   stages {
-    stage('🖐 Echo Hello') {
+    stage('👋 Hello') {
       steps {
         echo '👋 Hello from Jenkins!'
       }
@@ -20,21 +26,79 @@ pipeline {
       }
     }
 
-    stage('📂 List Files') {
+    stage('📥 Clone Config Repo') {
       steps {
-        dir('dev') {
-          sh 'ls -la'
+        dir('config') {
+          git url: "${CONFIG_REPO_URL}", branch: 'main'
         }
+      }
+    }
+
+    stage('🐍 Lint Flask Backend') {
+      steps {
+        dir('dev/backend') {
+          sh '''
+            pip install flake8 > /dev/null || true
+            flake8 . || true
+          '''
+        }
+      }
+    }
+
+    stage('🧪 Run Flask Tests') {
+      steps {
+        dir('dev/backend') {
+          sh '''
+            pip install -r requirements.txt > /dev/null || true
+            python3 -m unittest discover -s tests || true
+          '''
+        }
+      }
+    }
+
+    stage('🐳 Build & Push Docker Image') {
+      steps {
+        dir('dev/backend') {
+          withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+            sh '''
+              echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+              docker build -t $IMAGE_NAME:$TAG .
+              docker push $IMAGE_NAME:$TAG
+            '''
+          }
+        }
+      }
+    }
+
+    stage('🚀 Deploy to Minikube') {
+      steps {
+        dir('config/k8s') {
+          sh '''
+            kubectl set image deployment/backend backend=$IMAGE_NAME:$TAG -n $PRIMARY_NS || true
+            kubectl apply -f . -n $PRIMARY_NS
+          '''
+        }
+      }
+    }
+
+    stage('🔍 Validate Deployment') {
+      steps {
+        sh '''
+          echo "Waiting for pods to be ready..."
+          kubectl rollout status deployment/backend -n $PRIMARY_NS || true
+          echo "Testing API:"
+          curl -s http://localhost:5000/api/products || echo "API test failed"
+        '''
       }
     }
   }
 
   post {
     success {
-      echo '✅ Pipeline ran successfully!'
+      echo '✅ Pipeline completed successfully!'
     }
     failure {
-      echo '❌ Pipeline failed!'
+      echo '❌ Pipeline failed. Check logs!'
     }
   }
 }
