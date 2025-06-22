@@ -12,7 +12,6 @@ pipeline {
   }
 
   options {
-    timestamps()
     skipStagesAfterUnstable()
     disableConcurrentBuilds()
   }
