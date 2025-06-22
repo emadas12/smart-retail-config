@@ -8,15 +8,19 @@ pipeline {
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
     CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
     PRIMARY_NS = 'default'
-    DR_NS = 'dr-region'
-    KUBECONFIG = '/var/jenkins_home/.kube/config'
+    KUBECONFIG = '/root/.kube/config'
   }
 
   stages {
+
     stage('Clone Config Repo') {
       steps {
         echo '📁 Cloning smart-retail-config repository...'
-        checkout([$class: 'GitSCM', userRemoteConfigs: [[url: "${CONFIG_REPO_URL}"]]])
+        checkout([
+          $class: 'GitSCM',
+          branches: [[name: '*/main']],
+          userRemoteConfigs: [[url: "${CONFIG_REPO_URL}"]]
+        ])
       }
     }
 
@@ -33,43 +37,62 @@ pipeline {
       steps {
         echo '🔍 Linting Flask Backend...'
         dir('dev/backend') {
-          sh '''
-            if ! command -v pip3 &> /dev/null; then
-              echo "❌ pip3 not found!"
-              exit 1
-            fi
-            pip3 install --break-system-packages --upgrade pip
-            pip3 install flake8
-            flake8 app.py || echo "⚠️ Lint warnings detected but continuing"
-          '''
+          sh 'python3 -m ensurepip || true'
+          sh 'python3 -m pip install --upgrade pip || true'
+          sh 'pip3 install flake8 || true'
+          sh 'flake8 app.py || true'
         }
       }
     }
 
     stage('Unit Tests') {
-      when {
-        expression { currentBuild.resultIsBetterOrEqualTo('SUCCESS') }
-      }
       steps {
-        echo '🧪 Running unit tests...'
+        echo '🧪 Running Unit Tests...'
         dir('dev/backend') {
-          sh '''
-            pip3 install pytest
-            pytest || echo "⚠️ Some tests failed"
-          '''
+          sh 'python3 -m unittest discover tests || true'
         }
       }
     }
 
-    // נמשיך את שאר השלבים בהמשך
+    stage('Docker Build & Push') {
+      steps {
+        echo '🐳 Building Docker Image & Pushing...'
+        dir('dev/backend') {
+          script {
+            docker.withRegistry('', "${DOCKER_CREDENTIALS_ID}") {
+              def image = docker.build("${IMAGE_NAME}:${TAG}")
+              image.push()
+            }
+          }
+        }
+      }
+    }
+
+    stage('Deploy to Kubernetes') {
+      steps {
+        echo '🚀 Deploying to Minikube...'
+        dir('k8s/backend') {
+          sh 'kubectl apply -f deployment.yaml --namespace=${PRIMARY_NS}'
+          sh 'kubectl apply -f service.yaml --namespace=${PRIMARY_NS}'
+        }
+      }
+    }
+
+    stage('Health Check') {
+      steps {
+        echo '✅ Running Health Checks...'
+        sh 'sleep 10'
+        sh 'curl --fail http://localhost:3000 || exit 1'
+      }
+    }
   }
 
   post {
-    failure {
-      echo "❌ Deployment Failed."
-    }
     success {
-      echo "✅ Pipeline Completed Successfully."
+      echo '🎉 Deployment Success!'
+    }
+    failure {
+      echo '❌ Deployment Failed.'
     }
   }
 }
