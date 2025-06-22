@@ -6,6 +6,9 @@ pipeline {
     TAG = "build-${env.BUILD_NUMBER}"
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+    PRIMARY_NS = 'default'
+    KUBECONFIG = '/root/.kube/config'
   }
 
   stages {
@@ -18,38 +21,63 @@ pipeline {
       }
     }
 
-    stage('Build Docker Image') {
+    stage('Lint Backend Code') {
       steps {
-        echo '🐳 Building Docker image...'
         dir('dev/backend') {
-          script {
-            docker.build("${IMAGE_NAME}:${TAG}")
+          sh 'pip install flake8'
+          sh 'flake8 app.py'
+        }
+      }
+    }
+
+    stage('Unit Tests') {
+      steps {
+        dir('dev/backend') {
+          sh 'pip install -r requirements.txt'
+          sh 'pytest tests/'
+        }
+      }
+    }
+
+    stage('Docker Build & Push') {
+      steps {
+        script {
+          docker.withRegistry('', "${DOCKER_CREDENTIALS_ID}") {
+            sh """
+              docker build -t ${IMAGE_NAME}:${TAG} dev/backend
+              docker push ${IMAGE_NAME}:${TAG}
+            """
           }
         }
       }
     }
 
-    stage('Push Docker Image') {
+    stage('Deploy to Kubernetes') {
       steps {
-        echo '🚀 Pushing Docker image to Docker Hub...'
-        dir('dev/backend') {
-          script {
-            docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
-              docker.image("${IMAGE_NAME}:${TAG}").push()
-              docker.image("${IMAGE_NAME}:${TAG}").push('latest')
-            }
-          }
+        echo '🚀 Deploying to Kubernetes...'
+        dir('config/k8s') {
+          sh """
+            sed -i 's|rani19/backend:.*|${IMAGE_NAME}:${TAG}|' backend-deployment.yaml
+            kubectl apply -f backend-deployment.yaml --kubeconfig=${KUBECONFIG}
+          """
         }
+      }
+    }
+
+    stage('Health Check') {
+      steps {
+        echo '✅ Checking service health...'
+        sh 'sleep 10 && curl -f http://localhost:5000/api/products || exit 1'
       }
     }
   }
 
   post {
     success {
-      echo '✅ Build and Push succeeded!'
+      echo '🎉 Deployment Succeeded!'
     }
     failure {
-      echo '❌ Build and Push failed.'
+      echo '❌ Deployment Failed.'
     }
   }
 }

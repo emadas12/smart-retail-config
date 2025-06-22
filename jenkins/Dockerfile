@@ -2,17 +2,13 @@ FROM jenkins/jenkins:lts
 
 USER root
 
-# התקנת docker
-RUN apt-get update && \
-    apt-get install -y docker.io curl
-
 # התקנת kubectl
-RUN curl -LO "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl" && \
-    chmod +x kubectl && \
-    mv kubectl /usr/local/bin/
+RUN curl -LO https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl \
+    && install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
-# הוספת המשתמש jenkins לקבוצת docker
-RUN usermod -aG docker jenkins
+# התקנת Docker בתוך Jenkins
+RUN apt-get update && \
+    apt-get install -y docker.io && \
+    usermod -aG docker jenkins
 
-# יצירת תיקיית .kube שתכיל את קובץ הקונפיג של מיניקיוב
-RUN mkdir -p /var/jenkins_home/.kube
+USER jenkins
