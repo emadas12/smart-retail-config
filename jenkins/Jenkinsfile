@@ -3,7 +3,7 @@ pipeline {
 
   environment {
     IMAGE_NAME = 'rani19/backend'
-    TAG = "build-${env.BUILD_NUMBER}"
+    TAG = "v1.${env.BUILD_NUMBER}"
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
     CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
