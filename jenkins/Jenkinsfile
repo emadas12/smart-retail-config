@@ -6,6 +6,7 @@ pipeline {
     TAG = "build-${env.BUILD_NUMBER}"
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
   }
 
   stages {
@@ -32,11 +33,20 @@ pipeline {
         }
       }
     }
+
+    stage('Clone Config Repo') {
+      steps {
+        echo '📁 Cloning smart-retail-config repository...'
+        dir('config') {
+          git url: "${CONFIG_REPO_URL}", branch: 'main'
+        }
+      }
+    }
   }
 
   post {
     success {
-      echo '✅ Docker image built and pushed successfully!'
+      echo '✅ Docker image built and config repo cloned successfully!'
     }
     failure {
       echo '❌ Build failed. Check logs.'
