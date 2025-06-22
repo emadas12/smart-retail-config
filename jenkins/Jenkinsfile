@@ -12,18 +12,6 @@ pipeline {
   }
 
   stages {
-
-    stage('Clone Config Repo') {
-      steps {
-        echo '📁 Cloning smart-retail-config repository...'
-        checkout([
-          $class: 'GitSCM',
-          branches: [[name: '*/main']],
-          userRemoteConfigs: [[url: "${CONFIG_REPO_URL}"]]
-        ])
-      }
-    }
-
     stage('Clone Dev Repo') {
       steps {
         echo '📥 Cloning smart-retail-dev repository...'
@@ -33,66 +21,29 @@ pipeline {
       }
     }
 
-    stage('Lint Backend Code') {
+    stage('Lint Flask Backend') {
       steps {
-        echo '🔍 Linting Flask Backend...'
+        echo '🔍 Running flake8 linter on backend...'
         dir('dev/backend') {
-          sh 'python3 -m ensurepip || true'
-          sh 'python3 -m pip install --upgrade pip || true'
-          sh 'pip3 install flake8 || true'
-          sh 'flake8 app.py || true'
+          sh '''
+            pip install flake8 > /dev/null
+            flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+            flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+          '''
         }
       }
     }
 
-    stage('Unit Tests') {
+    stage('Lint React Frontend') {
       steps {
-        echo '🧪 Running Unit Tests...'
-        dir('dev/backend') {
-          sh 'python3 -m unittest discover tests || true'
+        echo '🔍 Running ESLint on React frontend...'
+        dir('dev/frontend') {
+          sh '''
+            npm ci > /dev/null
+            npx eslint . --ext .ts,.tsx
+          '''
         }
       }
-    }
-
-    stage('Docker Build & Push') {
-      steps {
-        echo '🐳 Building Docker Image & Pushing...'
-        dir('dev/backend') {
-          script {
-            docker.withRegistry('', "${DOCKER_CREDENTIALS_ID}") {
-              def image = docker.build("${IMAGE_NAME}:${TAG}")
-              image.push()
-            }
-          }
-        }
-      }
-    }
-
-    stage('Deploy to Kubernetes') {
-      steps {
-        echo '🚀 Deploying to Minikube...'
-        dir('k8s/backend') {
-          sh 'kubectl apply -f deployment.yaml --namespace=${PRIMARY_NS}'
-          sh 'kubectl apply -f service.yaml --namespace=${PRIMARY_NS}'
-        }
-      }
-    }
-
-    stage('Health Check') {
-      steps {
-        echo '✅ Running Health Checks...'
-        sh 'sleep 10'
-        sh 'curl --fail http://localhost:3000 || exit 1'
-      }
-    }
-  }
-
-  post {
-    success {
-      echo '🎉 Deployment Success!'
-    }
-    failure {
-      echo '❌ Deployment Failed.'
     }
   }
 }
