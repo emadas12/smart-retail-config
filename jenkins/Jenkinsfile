@@ -2,71 +2,76 @@ pipeline {
   agent any
 
   environment {
-    DEV_REPO_URL = "https://github.com/RaniSaed/smart-retail-dev.git"
-    CONFIG_REPO_URL = "https://github.com/RaniSaed/smart-retail-config.git"
-    IMAGE_BACKEND = "rani19/backend"
-    IMAGE_FRONTEND = "rani19/frontend"
+    IMAGE_NAME = 'rani19/backend'
     TAG = "build-${env.BUILD_NUMBER}"
-    DOCKER_CREDENTIALS_ID = "docker-hub-creds"
-    KUBECONFIG = "/var/jenkins_home/.kube/config"
+    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+    DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+    PRIMARY_NS = 'default'
+    KUBECONFIG = '/root/.kube/config'
   }
 
   stages {
-    stage('📥 Clone Repositories') {
+    stage('👋 Welcome') {
       steps {
-        echo '🔄 Cloning smart-retail-dev and smart-retail-config...'
+        echo '👋 Hello from Jenkins Pipeline!'
+      }
+    }
 
+    stage('📥 Clone Dev Repo') {
+      steps {
         dir('dev') {
           git url: "${DEV_REPO_URL}", branch: 'main'
         }
+      }
+    }
 
+    stage('📥 Clone Config Repo') {
+      steps {
         dir('config') {
           git url: "${CONFIG_REPO_URL}", branch: 'main'
         }
       }
     }
 
-    stage('🔍 Lint & Test Code') {
-      steps {
-        script {
-          echo '🧪 Running flake8 for backend...'
-          dir('dev/backend') {
-            sh 'flake8 app.py || true'
-          }
-
-          echo '🧪 Running eslint for frontend...'
-          dir('dev/frontend') {
-            sh 'npm install'
-            sh 'npx eslint src --ext .ts,.tsx || true'
-          }
-
-          echo '✅ Linting done (errors ignored for now)'
-        }
-      }
-    }
-
-    stage('🧪 Unit Tests (Backend)') {
+    stage('🐍 Lint Flask Backend') {
       steps {
         dir('dev/backend') {
-          sh 'pip install --break-system-packages -r requirements.txt || true'
-          sh 'pytest || true'
+          sh '''
+            echo "🔍 Running flake8..."
+            pip install --break-system-packages flake8 > /dev/null || true
+            flake8 . || true
+          '''
         }
       }
     }
 
-    stage('🐳 Build & Push Docker Images') {
+    stage('🧪 Run Flask Tests') {
       steps {
-        script {
-          docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
-            dir('dev/backend') {
-              def backendImage = docker.build("${IMAGE_BACKEND}:${TAG}")
-              backendImage.push()
-            }
+        dir('dev/backend') {
+          sh '''
+            echo "🧪 Installing requirements and running tests..."
+            pip install --break-system-packages -r requirements.txt > /dev/null || true
+            python3 -m unittest discover -s tests || true
+          '''
+        }
+      }
+    }
 
-            dir('dev/frontend') {
-              def frontendImage = docker.build("${IMAGE_FRONTEND}:${TAG}")
-              frontendImage.push()
-            }
+    stage('🐳 Build & Push Docker Image') {
+      steps {
+        dir('dev/backend') {
+          withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+            sh '''
+              echo "🐳 Logging in to Docker Hub..."
+              echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
+              echo "📦 Building Docker image..."
+              docker build -t $IMAGE_NAME:$TAG .
+
+              echo "🚀 Pushing Docker image..."
+              docker push $IMAGE_NAME:$TAG
+            '''
           }
         }
       }
@@ -75,10 +80,10 @@ pipeline {
 
   post {
     success {
-      echo "✅ CI/CD pipeline completed up to Docker image push!"
+      echo '✅ Pipeline completed successfully!'
     }
     failure {
-      echo "❌ Pipeline failed. Check logs for more information."
+      echo '❌ Pipeline failed. Check logs for more info.'
     }
   }
 }
