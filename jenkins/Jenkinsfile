@@ -83,6 +83,26 @@ pipeline {
         }
       }
     }
+
+    stage('🚀 Deploy to Primary') {
+      steps {
+        dir('config') {
+          script {
+            echo "📦 Deploying backend with tag: $TAG to namespace: $PRIMARY_NS"
+
+            sh """
+              # החלפת TAG מהתבנית ל-BUILD הנוכחי
+              sed 's|rani19/backend:latest|rani19/backend:$TAG|' k8s/backend/deployment.yaml > k8s/backend/deployment-temp.yaml
+
+              # פריסה לקלאסטר
+              kubectl apply -n $PRIMARY_NS -f k8s/backend/deployment-temp.yaml
+              kubectl apply -n $PRIMARY_NS -f k8s/backend/service.yaml
+            """
+          }
+        }
+      }
+    }
+
   }
 
   post {
