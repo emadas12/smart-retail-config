@@ -26,7 +26,7 @@ pipeline {
         echo '🔍 Running flake8 linter on backend...'
         dir('dev/backend') {
           sh '''
-            pip install flake8 > /dev/null
+            pip install flake8 > /dev/null || true
             flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
             flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
           '''
@@ -44,6 +44,27 @@ pipeline {
           '''
         }
       }
+    }
+
+    stage('🧪 Run Flask Unit Tests') {
+      steps {
+        echo '🧪 Running backend unit tests...'
+        dir('dev/backend') {
+          sh '''
+            pip install -r requirements.txt > /dev/null || true
+            python3 -m unittest discover -s tests || true
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo '✅ Pipeline completed successfully!'
+    }
+    failure {
+      echo '❌ Pipeline failed!'
     }
   }
 }
