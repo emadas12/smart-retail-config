@@ -7,11 +7,14 @@ pipeline {
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
     CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+    PRIMARY_NS = 'default'
+    DR_NS = 'dr-region'
   }
 
   stages {
     stage('Clone Dev Repo') {
       steps {
+        echo '📥 Cloning smart-retail-dev repository...'
         dir('dev') {
           git url: "${DEV_REPO_URL}", branch: 'main'
         }
@@ -22,10 +25,9 @@ pipeline {
       steps {
         dir('dev/backend') {
           script {
-            docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
+            docker.withRegistry('', DOCKER_CREDENTIALS_ID) {
               def image = docker.build("${IMAGE_NAME}:${TAG}")
               image.push()
-              image.push('latest')
             }
           }
         }
@@ -34,6 +36,7 @@ pipeline {
 
     stage('Clone Config Repo') {
       steps {
+        echo '📁 Cloning smart-retail-config repository...'
         dir('config') {
           git url: "${CONFIG_REPO_URL}", branch: 'main'
         }
@@ -42,21 +45,22 @@ pipeline {
 
     stage('Deploy to Kubernetes') {
       steps {
-        echo "🚀 Deploying to Kubernetes"
-        sh """
-          sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' config/k8s/backend/deployment.yaml
-          kubectl apply -f config/k8s/backend/deployment.yaml
-        """
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          dir('config/k8s') {
+            sh 'kubectl apply -f backend-deployment.yaml -n default'
+            sh 'kubectl apply -f backend-service.yaml -n default'
+          }
+        }
       }
     }
   }
 
   post {
-    success {
-      echo '✅ CI/CD complete!'
-    }
     failure {
-      echo '❌ Failed, check logs!'
+      echo '❌ Build failed!'
+    }
+    success {
+      echo '✅ Build and deployment successful!'
     }
   }
 }
