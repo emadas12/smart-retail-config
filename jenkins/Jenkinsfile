@@ -12,9 +12,9 @@ pipeline {
   }
 
   options {
-    buildDiscarder(logRotator(numToKeepStr: '10')) // שמור רק 10 ריצות אחרונות
+    buildDiscarder(logRotator(numToKeepStr: '10'))
     skipDefaultCheckout()
-    timeout(time: 30, unit: 'MINUTES') // מקסימום זמן להרצה
+    timeout(time: 30, unit: 'MINUTES')
   }
 
   stages {
@@ -47,7 +47,7 @@ pipeline {
           sh '''
             echo "🔍 Installing flake8 and linting code..."
             pip install --break-system-packages flake8 > /dev/null || true
-            flake8 . || true
+            flake8 . || echo "⚠️ Lint warnings found, but continuing pipeline."
           '''
         }
       }
@@ -57,9 +57,13 @@ pipeline {
       steps {
         dir('dev/backend') {
           sh '''
-            echo "🧪 Installing requirements and running unit tests..."
+            echo "🧪 Installing requirements and checking for tests..."
             pip install --break-system-packages -r requirements.txt > /dev/null || true
-            python3 -m unittest discover -s tests || true
+            if [ -d tests ]; then
+              python3 -m unittest discover -s tests || true
+            else
+              echo "ℹ️ No tests directory found, skipping tests."
+            fi
           '''
         }
       }
@@ -91,10 +95,8 @@ pipeline {
             echo "📦 Deploying backend with tag: $TAG to namespace: $PRIMARY_NS"
 
             sh """
-              # החלפת TAG מהתבנית ל-BUILD הנוכחי
               sed 's|rani19/backend:latest|rani19/backend:$TAG|' k8s/backend/deployment.yaml > k8s/backend/deployment-temp.yaml
 
-              # פריסה לקלאסטר
               kubectl apply -n $PRIMARY_NS -f k8s/backend/deployment-temp.yaml
               kubectl apply -n $PRIMARY_NS -f k8s/backend/service.yaml
             """
