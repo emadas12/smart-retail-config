@@ -6,7 +6,7 @@ pipeline {
   }
 
   stages {
-    stage('🔍 Echo Hello') {
+    stage('🖐 Echo Hello') {
       steps {
         echo '👋 Hello from Jenkins!'
       }
