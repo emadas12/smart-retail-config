@@ -2,7 +2,7 @@ FROM jenkins/jenkins:lts
 
 USER root
 
-# התקנת Docker, Node.js, Python, kubectl, curl ועוד
+# התקנת כלים
 RUN apt-get update && apt-get install -y \
     docker.io \
     curl \
@@ -24,10 +24,12 @@ RUN curl -LO https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubect
     install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && \
     rm kubectl
 
-# התקנת linters עם הרשאה לעקוף PEP 668
-RUN pip3 install --break-system-packages flake8 && npm install -g eslint
+# ניצור סביבה לכלים עבור Jenkins וניתן גישה
+RUN mkdir -p /tools && \
+    pip3 install --break-system-packages --target=/tools flake8 && \
+    npm install -g eslint && \
+    ln -s /tools/flake8 /usr/local/bin/flake8
 
-# הרשאה עבור jenkins להשתמש בכלים
-RUN chown -R jenkins:jenkins /usr/local/bin /usr/local/lib /usr/lib
+ENV PATH="/tools:$PATH"
 
 USER jenkins

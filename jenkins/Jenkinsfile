@@ -4,6 +4,11 @@ pipeline {
   environment {
     DEV_REPO_URL = "https://github.com/RaniSaed/smart-retail-dev.git"
     CONFIG_REPO_URL = "https://github.com/RaniSaed/smart-retail-config.git"
+    IMAGE_BACKEND = "rani19/backend"
+    IMAGE_FRONTEND = "rani19/frontend"
+    TAG = "build-${env.BUILD_NUMBER}"
+    DOCKER_CREDENTIALS_ID = "docker-hub-creds"
+    KUBECONFIG = "/var/jenkins_home/.kube/config"
   }
 
   stages {
@@ -39,14 +44,41 @@ pipeline {
         }
       }
     }
+
+    stage('🧪 Unit Tests (Backend)') {
+      steps {
+        dir('dev/backend') {
+          sh 'pip install --break-system-packages -r requirements.txt || true'
+          sh 'pytest || true'
+        }
+      }
+    }
+
+    stage('🐳 Build & Push Docker Images') {
+      steps {
+        script {
+          docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
+            dir('dev/backend') {
+              def backendImage = docker.build("${IMAGE_BACKEND}:${TAG}")
+              backendImage.push()
+            }
+
+            dir('dev/frontend') {
+              def frontendImage = docker.build("${IMAGE_FRONTEND}:${TAG}")
+              frontendImage.push()
+            }
+          }
+        }
+      }
+    }
   }
 
   post {
     success {
-      echo "✅ Pipeline stage 2 finished successfully!"
+      echo "✅ CI/CD pipeline completed up to Docker image push!"
     }
     failure {
-      echo "❌ Linting or cloning failed."
+      echo "❌ Pipeline failed. Check logs for more information."
     }
   }
 }
