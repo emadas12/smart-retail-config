@@ -7,8 +7,6 @@ pipeline {
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
     CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
-    PRIMARY_NS = 'default'
-    KUBECONFIG = '/root/.kube/config'
   }
 
   stages {
@@ -67,28 +65,6 @@ pipeline {
             '''
           }
         }
-      }
-    }
-
-    stage('🚀 Deploy to Minikube') {
-      steps {
-        dir('config/k8s') {
-          sh '''
-            kubectl set image deployment/backend backend=$IMAGE_NAME:$TAG -n $PRIMARY_NS || true
-            kubectl apply -f . -n $PRIMARY_NS
-          '''
-        }
-      }
-    }
-
-    stage('🔍 Validate Deployment') {
-      steps {
-        sh '''
-          echo "Waiting for pods to be ready..."
-          kubectl rollout status deployment/backend -n $PRIMARY_NS || true
-          echo "Testing API:"
-          curl -s http://localhost:5000/api/products || echo "API test failed"
-        '''
       }
     }
   }
