@@ -5,6 +5,7 @@ pipeline {
     IMAGE_NAME = 'rani19/backend'
     TAG = "build-${env.BUILD_NUMBER}"
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_PATH = 'k8s/backend/deployment.yaml'
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
   }
 
@@ -14,7 +15,7 @@ pipeline {
   }
 
   stages {
-    stage('Clone Dev Repo') {
+    stage('📥 Clone Dev Repo') {
       steps {
         dir('dev') {
           git url: "${DEV_REPO_URL}", branch: 'main'
@@ -22,7 +23,7 @@ pipeline {
       }
     }
 
-    stage('Check Backend Changes') {
+    stage('🔍 Check Backend Changes') {
       steps {
         dir('dev') {
           script {
@@ -41,18 +42,18 @@ pipeline {
       }
     }
 
-    stage('Build Docker Image') {
+    stage('🐳 Build Docker Image') {
       steps {
         dir('dev') {
           script {
-            echo "📦 Building image ${IMAGE_NAME}:${TAG}"
+            echo "📦 Building Docker image: ${IMAGE_NAME}:${TAG}"
             docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
           }
         }
       }
     }
 
-    stage('Push to Docker Hub') {
+    stage('📤 Push to Docker Hub') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           script {
@@ -64,17 +65,36 @@ pipeline {
         }
       }
     }
+
+    stage('✏️ Update K8s Deployment File') {
+      steps {
+        script {
+          def deploymentFile = "${WORKSPACE}/config/${CONFIG_REPO_PATH}"
+
+          sh """
+            echo '📁 Current deployment file:'
+            cat ${deploymentFile}
+
+            echo '✏️ Updating image tag to: ${TAG}'
+            sed -i 's|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${TAG}|' ${deploymentFile}
+
+            echo '📁 Updated deployment file:'
+            cat ${deploymentFile}
+          """
+        }
+      }
+    }
   }
 
   post {
     success {
-      echo "✅ Backend image pushed: ${IMAGE_NAME}:${TAG}"
-    }
-    aborted {
-      echo "⏹️ Pipeline aborted (no backend changes)"
+      echo "✅ Backend pipeline succeeded. Image pushed and deployment.yaml updated."
     }
     failure {
-      echo "❌ Pipeline failed"
+      echo "❌ Pipeline failed."
+    }
+    aborted {
+      echo "🛑 Pipeline aborted (no backend changes)."
     }
   }
 }
