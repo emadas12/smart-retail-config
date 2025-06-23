@@ -6,6 +6,7 @@ pipeline {
     TAG = "build-${env.BUILD_NUMBER}"
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+    SLACK_WEBHOOK = credentials('slack-webhook')
   }
 
   options {
@@ -63,19 +64,32 @@ pipeline {
             }
           }
         }
+        echo "✅ Frontend image pushed: ${IMAGE_NAME}:${TAG}"
+        sh """
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text": "✅ *Frontend Build Success* — Image `${IMAGE_NAME}:${TAG}` pushed to Docker Hub."}' \
+          ${SLACK_WEBHOOK}
+        """
       }
     }
   }
 
   post {
-    success {
-      echo "✅ Frontend image pushed: ${IMAGE_NAME}:${TAG}"
-    }
     aborted {
       echo "⏹️ Pipeline aborted (no frontend changes)"
+      sh """
+        curl -X POST -H 'Content-type: application/json' \
+        --data '{"text": "⚠️ *Frontend Build Aborted* — No code changes detected."}' \
+        ${SLACK_WEBHOOK}
+      """
     }
     failure {
       echo "❌ Pipeline failed"
+      sh """
+        curl -X POST -H 'Content-type: application/json' \
+        --data '{"text": "❌ *Frontend Build Failed* — Check Jenkins pipeline for errors."}' \
+        ${SLACK_WEBHOOK}
+      """
     }
   }
 }
