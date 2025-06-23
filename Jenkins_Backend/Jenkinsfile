@@ -1,0 +1,80 @@
+pipeline {
+  agent any
+
+  environment {
+    IMAGE_NAME = 'rani19/backend'
+    TAG = "build-${env.BUILD_NUMBER}"
+    DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+  }
+
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '5'))
+    timeout(time: 20, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('Clone Dev Repo') {
+      steps {
+        dir('dev') {
+          git url: "${DEV_REPO_URL}", branch: 'main'
+        }
+      }
+    }
+
+    stage('Check Backend Changes') {
+      steps {
+        dir('dev') {
+          script {
+            def backendChanged = sh(
+              script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
+              returnStatus: true
+            ) == 0
+
+            if (!backendChanged) {
+              echo "⚠️ No changes in backend code. Aborting..."
+              currentBuild.result = 'ABORTED'
+              error("No changes in backend/")
+            }
+          }
+        }
+      }
+    }
+
+    stage('Build Docker Image') {
+      steps {
+        dir('dev') {
+          script {
+            echo "📦 Building image ${IMAGE_NAME}:${TAG}"
+            docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
+          }
+        }
+      }
+    }
+
+    stage('Push to Docker Hub') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          script {
+            docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
+              docker.image("${IMAGE_NAME}:${TAG}").push()
+              docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Backend image pushed: ${IMAGE_NAME}:${TAG}"
+    }
+    aborted {
+      echo "⏹️ Pipeline aborted (no backend changes)"
+    }
+    failure {
+      echo "❌ Pipeline failed"
+    }
+  }
+}
