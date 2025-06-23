@@ -6,7 +6,7 @@ pipeline {
     TAG = "build-${env.BUILD_NUMBER}"
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-    SLACK_CREDENTIAL_ID = 'slack-webhook'
+    SLACK_WEBHOOK = credentials('slack-webhook')
   }
 
   options {
