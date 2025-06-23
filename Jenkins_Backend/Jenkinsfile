@@ -6,7 +6,7 @@ pipeline {
     TAG = "build-${env.BUILD_NUMBER}"
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-    SLACK_WEBHOOK = credentials('slack-webhook')
+    SLACK_CREDENTIAL_ID = 'slack-webhook'
   }
 
   options {
@@ -23,7 +23,7 @@ pipeline {
       }
     }
 
-    stage('🔍 Check Backend Changes') {
+    stage('🕵️ Check Backend Changes') {
       steps {
         dir('dev') {
           script {
@@ -34,7 +34,6 @@ pipeline {
 
             if (!backendChanged) {
               echo "⚠️ No changes in backend code. Aborting..."
-              slackNotify("⏹️ *Backend Build Aborted* — No changes in `backend/` folder.")
               currentBuild.result = 'ABORTED'
               error("No changes in backend/")
             }
@@ -54,7 +53,7 @@ pipeline {
       }
     }
 
-    stage('📤 Push to Docker Hub') {
+    stage('🚀 Push to Docker Hub') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           script {
@@ -71,26 +70,36 @@ pipeline {
   post {
     success {
       script {
-        echo "✅ Backend image pushed successfully!"
-        slackNotify("✅ *Backend Build Success* — Image `${IMAGE_NAME}:${TAG}` pushed to Docker Hub.")
+        echo "✅ Backend image pushed: ${IMAGE_NAME}:${TAG}"
+        withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+          sh """
+            curl -X POST -H 'Content-type: application/json' \
+            --data '{"text": "✅ Backend Build Success — Image *${IMAGE_NAME}:${TAG}* pushed to Docker Hub."}' $SLACK_WEBHOOK
+          """
+        }
       }
     }
     aborted {
       script {
-        slackNotify("⚠️ *Backend Pipeline Aborted* — No relevant changes detected.")
+        echo "⏹️ Pipeline aborted (no backend changes)"
+        withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+          sh """
+            curl -X POST -H 'Content-type: application/json' \
+            --data '{"text": "⚠️ Jenkins Backend Pipeline Aborted — No changes detected in backend/."}' $SLACK_WEBHOOK
+          """
+        }
       }
     }
     failure {
       script {
-        slackNotify("❌ *Backend Build Failed* — Please check the Jenkins logs.")
+        echo "❌ Pipeline failed"
+        withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+          sh """
+            curl -X POST -H 'Content-type: application/json' \
+            --data '{"text": "❌ Backend Build Failed — Check Jenkins logs for details."}' $SLACK_WEBHOOK
+          """
+        }
       }
     }
   }
-}
-
-def slackNotify(String message) {
-  sh """
-    curl -X POST -H 'Content-type: application/json' \
-    --data '{"text": "${message}"}' ${SLACK_WEBHOOK}
-  """
 }
