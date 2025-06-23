@@ -6,6 +6,7 @@ pipeline {
     TAG = "build-${env.BUILD_NUMBER}"
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+    SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/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'
   }
 
   options {
@@ -69,12 +70,23 @@ pipeline {
   post {
     success {
       echo "✅ Backend image pushed: ${IMAGE_NAME}:${TAG}"
+      slackNotify("✅ Backend build *succeeded* for `${IMAGE_NAME}:${TAG}`")
     }
     aborted {
       echo "⏹️ Pipeline aborted (no backend changes)"
+      slackNotify("⚠️ Backend build *aborted* — no changes in `backend/` folder")
     }
     failure {
       echo "❌ Pipeline failed"
+      slackNotify("❌ Backend build *failed* for `${IMAGE_NAME}:${TAG}`")
     }
   }
+}
+
+def slackNotify(String message) {
+  sh """
+    curl -X POST -H 'Content-type: application/json' \
+    --data '{"text": "${message}"}' \
+    ${env.SLACK_WEBHOOK_URL}
+  """
 }
