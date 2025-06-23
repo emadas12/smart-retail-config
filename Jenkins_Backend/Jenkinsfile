@@ -15,7 +15,7 @@ pipeline {
   }
 
   stages {
-    stage('Clone Dev Repo') {
+    stage('📥 Clone Dev Repo') {
       steps {
         dir('dev') {
           git url: "${DEV_REPO_URL}", branch: 'main'
@@ -23,7 +23,7 @@ pipeline {
       }
     }
 
-    stage('Check Backend Changes') {
+    stage('🔍 Check Backend Changes') {
       steps {
         dir('dev') {
           script {
@@ -34,6 +34,7 @@ pipeline {
 
             if (!backendChanged) {
               echo "⚠️ No changes in backend code. Aborting..."
+              slackNotify("⏹️ *Backend Build Aborted* — No changes in `backend/` folder.")
               currentBuild.result = 'ABORTED'
               error("No changes in backend/")
             }
@@ -42,7 +43,7 @@ pipeline {
       }
     }
 
-    stage('Build Docker Image') {
+    stage('🐳 Build Docker Image') {
       steps {
         dir('dev') {
           script {
@@ -53,7 +54,7 @@ pipeline {
       }
     }
 
-    stage('Push to Docker Hub') {
+    stage('📤 Push to Docker Hub') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           script {
@@ -69,25 +70,27 @@ pipeline {
 
   post {
     success {
-      slackSend (
-        channel: '#new-channel',
-        message: "✅ *Build Succeeded*: `${IMAGE_NAME}:${TAG}` has been pushed to Docker Hub.",
-        webhookUrl: credentials("${SLACK_CREDENTIAL_ID}")
-      )
+      script {
+        echo "✅ Backend image pushed successfully!"
+        slackNotify("✅ *Backend Build Success* — Image `${IMAGE_NAME}:${TAG}` pushed to Docker Hub.")
+      }
     }
     aborted {
-      slackSend (
-        channel: '#new-channel',
-        message: "⏹️ *Build Aborted*: No changes detected in `backend/`.",
-        webhookUrl: credentials("${SLACK_CREDENTIAL_ID}")
-      )
+      script {
+        slackNotify("⚠️ *Backend Pipeline Aborted* — No relevant changes detected.")
+      }
     }
     failure {
-      slackSend (
-        channel: '#new-channel',
-        message: "❌ *Build Failed*: Check Jenkins logs for details.",
-        webhookUrl: credentials("${SLACK_CREDENTIAL_ID}")
-      )
+      script {
+        slackNotify("❌ *Backend Build Failed* — Please check the Jenkins logs.")
+      }
     }
   }
+}
+
+def slackNotify(String message) {
+  sh """
+    curl -X POST -H 'Content-type: application/json' \
+    --data '{"text": "${message}"}' ${SLACK_WEBHOOK}
+  """
 }
