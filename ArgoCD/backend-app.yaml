@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backend-app # Corresponds to 'argocd app create backend-app'
+  namespace: argocd # ArgoCD applications are typically managed within the argocd namespace
+spec:
+  project: default # Assign to the 'default' project
+  source:
+    repoURL: https://github.com/RaniSaed/smart-retail-config.git # Corresponds to '--repo'
+    targetRevision: main # Corresponds to '--revision'
+    path: k8s/backend # Corresponds to '--path'
+  destination:
+    server: https://kubernetes.default.svc # Corresponds to '--dest-server'
+    namespace: default # Corresponds to '--dest-namespace'
+  syncPolicy:
+    automated:
+      prune: true # Corresponds to '--auto-prune'
+      selfHeal: true # Corresponds to '--self-heal'
+    # Other sync options can be added here if needed, e.g., 'allowEmpty'
