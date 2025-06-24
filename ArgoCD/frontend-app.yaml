@@ -1,18 +1,19 @@
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: frontend-app # Name of the ArgoCD Application
-  namespace: argocd # ArgoCD Applications are typically managed within the 'argocd' namespace
-spec:
-  project: default # Assign to the 'default' project within ArgoCD
-  source:
-    repoURL: https://github.com/RaniSaed/smart-retail-config.git # URL of your Git repository
-    targetRevision: main # The branch or tag to deploy from
-    path: k8s/frontend # The path within the repository where your Kubernetes manifests are located
-  destination:
-    server: https://kubernetes.default.svc # The target Kubernetes cluster API server
-    namespace: frontend # The dedicated namespace where frontend resources will be deployed
-  syncPolicy:
-    automated:
-      prune: true # Enables automatic pruning of resources that are removed from Git
-      selfHeal: true # Enables automatic synchronization when differences are detected
+    apiVersion: argoproj.io/v1alpha1
+    kind: Application
+    metadata:
+      name: frontend-app
+      namespace: argocd # This is the namespace where ArgoCD itself runs and manages applications
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/RaniSaed/smart-retail-config.git
+        targetRevision: main
+        path: k8s/frontend
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: default # <-- This tells ArgoCD to deploy the frontend to the 'default' Kubernetes namespace
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+    
