@@ -9,14 +9,14 @@ data:
       - name: devops-project-alerts
         rules:
           - alert: HighRequestVolumeRate
-            expr: sum(rate(flask_http_request_total[1m])) > 3
-            for: 1m
+            expr: sum(rate(flask_http_request_total[1m])) > 1.66
+            for: 30s
             labels:
               severity: warning
               team: devops
             annotations:
               summary: "⚠️ High Request Rate"
-              description: "HighRequest!!!."
+              description: "More than 100 requests/min detected."
 
           - alert: BackendServiceDown
             expr: up{job="flask-backend"} == 0
