@@ -115,6 +115,31 @@ pipeline {
                 }
             }
         }
+
+        stage('🧪 Run DR Failover Test') {
+            steps {
+                script {
+                    echo "⛔ Simulating primary failure..."
+                    sh "pkill -f 'kubectl port-forward service/frontend 3000:80'"
+                    sleep(5) // תן ל־failover-check.sh לזהות את התקלה
+
+                    echo "🔍 Checking DR response..."
+                    def response = sh(
+                        script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3002",
+                        returnStdout: true
+                    ).trim()
+
+                    if (response == '200') {
+                        echo "✅ DR is working as expected!"
+                    } else {
+                        error "❌ DR failed to respond correctly (status: ${response})"
+                    }
+
+                    echo "🔁 Restarting primary service..."
+                    sh "bash scripts/start-dev.sh"
+                }
+            }
+        }
     }
 
     post {
