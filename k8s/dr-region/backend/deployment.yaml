@@ -26,4 +26,4 @@ spec:
             - containerPort: 5000
           env:
             - name: DATABASE_URL
-              value: "postgresql://postgres:12345678@postgres:5432/shop_inventory"
+              value: "postgresql://postgres:12345678@postgres.default.svc.cluster.local:5432/shop_inventory"
