@@ -5,6 +5,7 @@ pipeline {
     IMAGE_NAME = 'rani19/backend'
     TAG = "build-${env.BUILD_NUMBER}"
     DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
     DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
     SLACK_CREDENTIAL_ID = 'slack-webhook'
   }
@@ -65,6 +66,45 @@ pipeline {
         }
       }
     }
+
+    stage('🛠️ Update Deployment File') {
+      steps {
+        dir('config') {
+          git url: "${CONFIG_REPO_URL}", branch: 'main'
+
+          script {
+            def file = "k8s/backend/deployment.yaml"
+            def fileContent = readFile(file)
+            def updated = fileContent.replaceAll(/image: .*/, "image: ${IMAGE_NAME}:${TAG}")
+            writeFile file: file, text: updated
+
+            sh 'git config user.email "jenkins@example.com"'
+            sh 'git config user.name "Jenkins CI"'
+            sh "git add ${file}"
+
+            sh '''
+              if ! git diff --cached --quiet; then
+                git commit -m "🤖 Update backend image to version ${TAG}"
+                git push origin main
+              else
+                echo "No changes to commit"
+              fi
+            '''
+          }
+        }
+      }
+    }
+
+    stage('🧹 Clean Up Old Docker Images') {
+      steps {
+        script {
+          sh '''
+            echo "Cleaning up old Docker images..."
+            docker images --filter=reference='rani19/backend:*' --format '{{.Repository}}:{{.Tag}}' | grep -v latest | sort | head -n -2 | xargs -r docker rmi || true
+          '''
+        }
+      }
+    }
   }
 
   post {
@@ -74,7 +114,7 @@ pipeline {
         withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
           sh """
             curl -X POST -H 'Content-type: application/json' \
-            --data '{"text": "✅ Backend Build Success — Image *${IMAGE_NAME}:${TAG}* pushed to Docker Hub."}' $SLACK_WEBHOOK
+            --data '{"text": "✅ Backend Build Success — Image *${IMAGE_NAME}:${TAG}* pushed and deployment.yaml updated."}' $SLACK_WEBHOOK
           """
         }
       }
@@ -85,7 +125,7 @@ pipeline {
         withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
           sh """
             curl -X POST -H 'Content-type: application/json' \
-            --data '{"text": "⚠️ Jenkins Backend Pipeline Aborted — No changes detected in backend/."}' $SLACK_WEBHOOK
+            --data '{"text": "⚠️ Jenkins Backend Pipeline Aborted — No changes in backend/."}' $SLACK_WEBHOOK
           """
         }
       }
@@ -100,6 +140,9 @@ pipeline {
           """
         }
       }
+    }
+    always {
+      cleanWs()
     }
   }
 }
