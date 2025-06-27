@@ -12,7 +12,7 @@ pipeline {
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '5'))
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 25, unit: 'MINUTES')
     }
 
     stages {
@@ -116,27 +116,30 @@ pipeline {
             }
         }
 
-        stage('🧪 Run DR Failover Test') {
+                stage('🧪 Run DR Failover Test') {
             steps {
                 script {
-                    echo "⛔ Simulating primary failure..."
-                    sh "pkill -f 'kubectl port-forward service/frontend 3000:80'"
-                    sleep(5) // תן ל־failover-check.sh לזהות את התקלה
+                    echo "🔁 Simulating primary failure..."
 
-                    echo "🔍 Checking DR response..."
-                    def response = sh(
+                    // 1. סגירת PRIMARY (frontend:3000)
+                    sh "pkill -f 'kubectl port-forward service/frontend 3000:80' || true"
+                    sleep(5)
+
+                    // 2. בדיקת DR
+                    def status = sh(
                         script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3002",
                         returnStdout: true
                     ).trim()
 
-                    if (response == '200') {
-                        echo "✅ DR is working as expected!"
+                    if (status == "200") {
+                        echo "✅ DR Frontend is UP on port 3002"
                     } else {
-                        error "❌ DR failed to respond correctly (status: ${response})"
+                        error("❌ DR Frontend is NOT available — HTTP ${status}")
                     }
 
-                    echo "🔁 Restarting primary service..."
-                    sh "bash scripts/start-dev.sh"
+                    // 3. שיחזור הסביבה דרך start-dev.sh
+                    echo "🛠️ Restarting full dev environment..."
+                    sh "bash dev/scripts/start-dev.sh"
                 }
             }
         }
@@ -144,11 +147,11 @@ pipeline {
 
     post {
         success {
-            echo "✅ Backend image pushed and deployment updated."
+            echo "✅ Backend CI/CD succeeded."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & DR passed."}' $SLACK_WEBHOOK
                 """
             }
         }
