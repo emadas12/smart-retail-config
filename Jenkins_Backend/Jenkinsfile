@@ -8,13 +8,12 @@ pipeline {
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
 
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        SLACK_CREDENTIAL_ID = 'slack-webhook'
-        GITHUB_CREDENTIAL_ID = 'github-push-token'
-        ARGOCD_CREDS_ID = 'argocd-admin-password'
+        SLACK_CREDENTIAL_ID   = 'slack-webhook'
+        GITHUB_CREDENTIAL_ID  = 'github-push-token'
+        ARGOCD_CREDS_ID       = 'argocd-admin-password'
 
-        // --- FIXED: ArgoCD Server Address Variable ---
-        // Removed 'https://' prefix. The argocd CLI handles the protocol based on port/flags.
-        ARGOCD_SERVER_ADDRESS = 'localhost:8080' // <--- **FIXED**
+        // Best: ArgoCD exposed via kubectl port-forward to localhost:8080 on host
+        ARGOCD_SERVER_ADDRESS = 'host.docker.internal:8080'
     }
 
     options {
@@ -23,6 +22,7 @@ pipeline {
     }
 
     stages {
+
         stage('📥 Clone Dev Repo') {
             steps {
                 dir('dev') {
@@ -70,7 +70,7 @@ pipeline {
                     script {
                         docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+                            docker.image("${IMAGE_NAME}:latest").push()
                         }
                     }
                 }
@@ -98,7 +98,7 @@ pipeline {
                                 git config user.name "Rani Saed (CI/CD)"
                                 git config user.email "rani.saed19@gmail.com"
                                 git add k8s/backend/deployment.yaml
-                                
+
                                 if ! git diff --cached --quiet; then
                                     git commit -m "🚀 Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
@@ -117,14 +117,11 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
                     script {
-                        echo "🚀 Deploying backend to DR via ArgoCD..."
-                        // --- FIXED: Pass password securely via stdin using 'read -s' to avoid Groovy interpolation warning ---
+                        echo "🚀 Deploying to DR via ArgoCD on host.docker.internal:8080"
                         sh """
-                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --grpc-web --insecure <<EOF
-                            ${ARGO_PASS}
-                            EOF
+                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --password "$ARGO_PASS" --grpc-web --insecure
+                            argocd app sync dr-backend-app --grpc-web
                         """
-                        sh "argocd app sync dr-backend-app --grpc-web"
                     }
                 }
             }
@@ -149,11 +146,11 @@ pipeline {
 
     post {
         success {
-            echo "✅ Success"
+            echo "✅ CI/CD pipeline succeeded"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR."}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR support."}' $SLACK_WEBHOOK
                 """
             }
         }
@@ -169,11 +166,11 @@ pipeline {
         }
 
         failure {
-            echo "❌ Failure"
+            echo "❌ Pipeline failed"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                    --data '{"text": "❌ *Backend* CI/CD failed. Check Jenkins logs."}' $SLACK_WEBHOOK
                 """
             }
         }
