@@ -12,10 +12,9 @@ pipeline {
         GITHUB_CREDENTIAL_ID = 'github-push-token'
         ARGOCD_CREDS_ID = 'argocd-admin-password'
 
-        // --- NEW: ArgoCD Server Address Variable ---
-        // Based on 'kubectl get svc -n argocd' output for 'argocd-server' service (80/TCP, 443/TCP)
-        // Using internal cluster DNS for argocd-server and port 443 for HTTPS/gRPC-web
-        ARGOCD_SERVER_ADDRESS = 'https://argocd-server.argocd.svc.cluster.local:443' // <--- **Updated to HTTPS on port 443**
+        // --- FIXED: ArgoCD Server Address Variable ---
+        // Removed 'https://' prefix. The argocd CLI handles the protocol based on port/flags.
+        ARGOCD_SERVER_ADDRESS = 'argocd-server.argocd.svc.cluster.local:443' // <--- **FIXED**
     }
 
     options {
@@ -119,7 +118,7 @@ pipeline {
                 withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
                     script {
                         echo "🚀 Deploying backend to DR via ArgoCD..."
-                        // Pass password securely via stdin using 'read -s' to avoid Groovy interpolation warning
+                        // --- FIXED: Pass password securely via stdin using 'read -s' to avoid Groovy interpolation warning ---
                         sh """
                             argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --grpc-web --insecure <<EOF
                             ${ARGO_PASS}
