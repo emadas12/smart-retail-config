@@ -1,79 +1,18 @@
-You've provided an updated `Jenkinsfile` and a screenshot showing a failure in your `✅ Validate Primary Health` stage (`backend-build-71`).
-
-Let's break down why this is happening and then give you the "best code" for a robust and comprehensive CI/CD pipeline, incorporating all the stages we've discussed.
-
-### **Understanding the Current Failure**
-
-Your current `Jenkinsfile`'s `✅ Validate Primary Health` stage uses `kubectl port-forward` to establish a temporary connection to your `backend` service and then `curl` `localhost:5000/api/products`. The screenshot indicates this `curl` command is failing repeatedly.
-
-**Common reasons for this failure:**
-
-1.  **`kubectl port-forward` issues:**
-      * The `kubectl` command might not be correctly installed or configured on the Jenkins agent.
-      * The `backend` service or its pods might not be running or healthy *within the cluster* at the time of the port-forward.
-      * Permissions: The Jenkins user/service account might not have the necessary RBAC permissions in Kubernetes to perform `port-forward`.
-      * Timing: `sleep 5` might not be long enough for the port-forward to fully establish or for the backend application to become ready to serve requests.
-2.  **Application Health:** Even if port-forwarding works, the backend application itself might not be truly healthy or responding on the `/api/products` endpoint. This could be due to:
-      * Application startup failures (check pod logs for errors).
-      * Incorrect `DATABASE_URL` or database connectivity issues from within the pod.
-      * The `/api/products` endpoint itself having an issue.
-
-### **Why `kubectl port-forward` is Not a Best Practice for CI/CD Health Checks**
-
-While useful for debugging, `kubectl port-forward` in a CI/CD pipeline is often:
-
-  * **Fragile:** Requires managing background processes, PIDs, and cleanup.
-  * **Limited:** Only checks the application from the Jenkins agent's perspective, not necessarily from external users or other services within the cluster.
-  * **Resource Intensive:** Spawns a background process for each check.
-  * **Not Comprehensive:** Doesn't truly test the full network path (Ingress, Load Balancers).
-
-### **The "Best Code": Full, Comprehensive Jenkinsfile**
-
-I will provide the full `Jenkinsfile` we discussed previously, but with the following key improvements for health checks and overall robustness:
-
-1.  **Replaced `port-forward` health checks:** The pipeline will rely on:
-      * **ArgoCD's built-in health checks:** The `argocd app wait --health` command is the primary method to ensure your application pods are running and their readiness probes are passing.
-      * **External health checks:** If you need to test actual application functionality (like `http://your-app/api/products`), it's best to `curl` the application's *external endpoint* (via its Ingress or Load Balancer). This tests the full deployment path.
-2.  **Corrected ArgoCD authentication:** Using `usernamePassword` credentials as per your existing setup.
-3.  **Removed `latest` Docker tag push:** Emphasizing immutable tags.
-4.  **All stages included:** Terraform plan, DR deployment, failover tests, and DR reports are re-included.
-5.  **Environment variables and credentials re-iterated.**
-
------
-
-```groovy
-// Jenkins_Backend/Jenkinsfile
 pipeline {
-    agent any // Consider using a custom Docker agent with required tools (kubectl, helm, terraform, argocd CLI, Python, yq/jq)
+    agent any
 
     environment {
         IMAGE_NAME = 'rani19/backend'
-        TAG = "build-${env.BUILD_NUMBER}" // Immutable tag
+        TAG = "build-${env.BUILD_NUMBER}"
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
-
-        // Jenkins Credentials IDs (ensure these exist in Jenkins)
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
         SLACK_CREDENTIAL_ID = 'slack-webhook'
-        GITHUB_PUSH_TOKEN_ID = 'github-push-token'
-        ARGOCD_ADMIN_CREDS_ID = 'argocd-admin-password' // Your existing ArgoCD Username/Password credential ID
-        PRIMARY_KUBECONFIG_ID = 'primary-kubeconfig'     // NEW: Secret File credential for primary cluster
-        DR_KUBECONFIG_ID = 'dr-kubeconfig'               // NEW: Secret File credential for DR cluster
-
-        // ArgoCD and Application Endpoints (REPLACE THESE PLACEHOLDERS)
-        ARGOCD_SERVER = "https://argocd.your-domain.com" // Your ArgoCD server URL
-        BACKEND_APP_PRIMARY = "backend-app"
-        BACKEND_APP_DR = "dr-backend-app"
-
-        // External Application Endpoints for Health Checks (REPLACE THESE PLACEHOLDERS)
-        // These should be your Load Balancer or Ingress URLs
-        PRIMARY_BACKEND_HEALTH_ENDPOINT = "http://primary-backend.your-domain.com/api/products"
-        DR_BACKEND_HEALTH_ENDPOINT = "http://dr-backend.your-domain.com/api/products"
     }
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '5'))
-        timeout(time: 30, unit: 'MINUTES') // Increased timeout for DR stages
+        timeout(time: 20, unit: 'MINUTES')
     }
 
     stages {
@@ -129,63 +68,25 @@ pipeline {
                     script {
                         docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
-                            // REMOVED: docker.image("${IMAGE_NAME}:${TAG}").push("latest") - Best practice: use immutable tags only.
-                            echo "Image ${IMAGE_NAME}:${TAG} pushed successfully."
+                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
                         }
                     }
                 }
             }
         }
 
-        stage('⚙️ Infrastructure Validation (Terraform Plan)') {
+        stage('✏️ Update Deployment YAML') {
             steps {
                 dir('config') {
                     script {
-                        echo "Running Terraform Plan for Primary Region infrastructure..."
-                        dir('terraform/primary') { // Assumes this directory exists in config repo
-                            sh "terraform init -backend-config=\"bucket=<your-primary-tfstate-bucket>\"" // Configure your remote backend
-                            sh "terraform plan -out=primary.tfplan"
-                            echo "Terraform plan for primary region generated."
-                            // Optionally, add a step to review and apply if desired, or send plan output to Slack
-                        }
-
-                        echo "Running Terraform Plan for DR Region infrastructure..."
-                        dir('terraform/dr') { // Assumes this directory exists in config repo
-                            sh "terraform init -backend-config=\"bucket=<your-dr-tfstate-bucket>\"" // Configure your remote backend
-                            sh "terraform plan -out=dr.tfplan"
-                            echo "Terraform plan for DR region generated."
-                        }
-                    }
-                }
-            }
-            post {
-                failure {
-                    echo "❌ Terraform Plan failed. Review infrastructure changes needed."
-                    slackSend(channel: "${SLACK_CHANNEL}", color: 'danger', message: "❌ Backend CI/CD failed at Terraform Plan stage for build ${env.BUILD_NUMBER}: ${BUILD_URL}")
-                    currentBuild.result = 'FAILURE'
-                }
-            }
-        }
-
-        stage('✏️ Update Deployment YAMLs (Primary & DR)') {
-            steps {
-                dir('config') {
-                    script {
-                        def primaryFilePath = "k8s/backend/deployment.yaml"
-                        def drFilePath = "k8s/dr-region/backend/deployment.yaml"
+                        def filePath = "k8s/backend/deployment.yaml"
                         def newImage = "${IMAGE_NAME}:${TAG}"
+                        echo "🔧 Updating ${filePath} with new image: ${newImage}"
 
-                        echo "🔧 Updating ${primaryFilePath} with new image: ${newImage}"
                         sh """
-                            sed -i 's|image:.*|image: ${newImage}|' ${primaryFilePath}
+                            sed -i 's|image:.*|image: ${newImage}|' ${filePath}
                         """
-                        sh "cat ${primaryFilePath}"
-
-                        echo "🔧 Updating ${drFilePath} with new image: ${newImage}"
-                        sh """
-                            sed -i 's|image:.*|image: ${newImage}|' ${drFilePath}
-                        """
-                        sh "cat ${drFilePath}"
+                        sh "cat ${filePath}"
                     }
                 }
             }
@@ -194,20 +95,19 @@ pipeline {
         stage('📤 Commit & Push Changes') {
             steps {
                 dir('config') {
-                    withCredentials([string(credentialsId: "${GITHUB_PUSH_TOKEN_ID}", variable: 'GIT_TOKEN')]) {
+                    withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
                         script {
                             sh """
                                 git config user.email "rani.saed19@gmail.com"
                                 git config user.name "Rani Saed (CI/CD)"
-                                git add k8s/backend/deployment.yaml k8s/dr-region/backend/deployment.yaml
+                                git add k8s/backend/deployment.yaml
 
                                 if ! git diff --cached --quiet; then
-                                    echo "Committing and pushing changes to config repo..."
-                                    git commit -m "🚀 Update backend image to ${TAG} for Primary and DR"
+                                    git commit -m "🚀 Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
                                     git push origin main
                                 else
-                                    echo "No changes to commit (deployment YAMLs already up-to-date or no image update needed)."
+                                    echo "No changes to commit"
                                 fi
                             """
                         }
@@ -216,228 +116,84 @@ pipeline {
             }
         }
 
-        stage('🚀 Deploy & Validate Primary Region') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: "${ARGOCD_ADMIN_CREDS_ID}", usernameVariable: 'ARGOCD_USERNAME', passwordVariable: 'ARGOCD_PASSWORD'),
-                                 file(credentialsId: "${PRIMARY_KUBECONFIG_ID}", variable: 'KUBECONFIG_FILE')]) {
-                    script {
-                        // Log in to ArgoCD using username and password
-                        echo "Logging into ArgoCD server: ${ARGOCD_SERVER}"
-                        sh "argocd login ${ARGOCD_SERVER} --username ${ARGOCD_USERNAME} --password ${ARGOCD_PASSWORD} --insecure" // Adjust --insecure as needed for your environment
-
-                        // Sync the primary application (ArgoCD will pick up the Git changes)
-                        echo "Triggering ArgoCD sync for primary application: ${BACKEND_APP_PRIMARY}"
-                        sh "argocd app sync ${BACKEND_APP_PRIMARY}"
-                        echo "Waiting for primary application ${BACKEND_APP_PRIMARY} to be healthy according to ArgoCD..."
-                        sh "argocd app wait ${BACKEND_APP_PRIMARY} --health --timeout 600" // Wait up to 10 minutes for health
-
-                        echo "Running external health check on primary deployment endpoint..."
-                        // This checks the application via its external Ingress/Load Balancer
-                        def maxRetries = 10 // Increased retries for external checks
-                        def delay = 10     // Increased delay
-                        def success = false
-
-                        for (int i = 1; i <= maxRetries; i++) {
-                            // Use --fail to make curl return non-zero on HTTP errors (e.g., 4xx, 5xx)
-                            // Use --silent to hide progress meter and error messages, --show-error to show error for non-zero exit
-                            def response = sh(
-                                script: "curl -s -o /dev/null -w '%{http_code}' --fail --show-error ${PRIMARY_BACKEND_HEALTH_ENDPOINT} || echo 'HTTP_FAIL'",
-                                returnStdout: true
-                            ).trim()
-
-                            if (response == "200") {
-                                echo "✅ Backend primary endpoint is healthy (HTTP 200)."
-                                success = true
-                                break
-                            } else {
-                                echo "🔁 Attempt ${i}/${maxRetries}: Primary endpoint responded with ${response}, retrying in ${delay}s..."
-                                sleep delay
-                            }
-                        }
-
-                        if (!success) {
-                            error("❌ Primary backend health check failed after ${maxRetries} attempts on ${PRIMARY_BACKEND_HEALTH_ENDPOINT}.")
-                        }
-                        echo "Primary deployment health validated."
-                    }
-                }
-            }
-            post {
-                failure {
-                    echo "❌ Primary deployment or health check failed. Halting pipeline."
-                    slackSend(channel: "${SLACK_CHANNEL}", color: 'danger', message: "❌ Backend CI/CD failed at Primary Deployment/Validation for build ${env.BUILD_NUMBER}: ${BUILD_URL}")
-                    currentBuild.result = 'FAILURE'
-                }
-            }
-        }
-
-        stage('🌐 Deploy & Validate Secondary (DR) Region') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: "${ARGOCD_ADMIN_CREDS_ID}", usernameVariable: 'ARGOCD_USERNAME', passwordVariable: 'ARGOCD_PASSWORD'),
-                                 file(credentialsId: "${DR_KUBECONFIG_ID}", variable: 'KUBECONFIG_FILE')]) {
-                    script {
-                        // Log in to ArgoCD using username and password
-                        echo "Logging into ArgoCD server: ${ARGOCD_SERVER}"
-                        sh "argocd login ${ARGOCD_SERVER} --username ${ARGOCD_USERNAME} --password ${ARGOCD_PASSWORD} --insecure"
-
-                        // Sync the DR application (ArgoCD will pick up the Git changes)
-                        echo "Triggering ArgoCD sync for DR application: ${BACKEND_APP_DR}"
-                        sh "argocd app sync ${BACKEND_APP_DR}"
-                        echo "Waiting for DR application ${BACKEND_APP_DR} to be healthy according to ArgoCD..."
-                        sh "argocd app wait ${BACKEND_APP_DR} --health --timeout 600"
-
-                        echo "Running external health check on DR deployment endpoint..."
-                        def maxRetries = 10
-                        def delay = 10
-                        def success = false
-
-                        for (int i = 1; i <= maxRetries; i++) {
-                            def response = sh(
-                                script: "curl -s -o /dev/null -w '%{http_code}' --fail --show-error ${DR_BACKEND_HEALTH_ENDPOINT} || echo 'HTTP_FAIL'",
-                                returnStdout: true
-                            ).trim()
-
-                            if (response == "200") {
-                                echo "✅ Backend DR endpoint is healthy (HTTP 200)."
-                                success = true
-                                break
-                            } else {
-                                echo "🔁 Attempt ${i}/${maxRetries}: DR endpoint responded with ${response}, retrying in ${delay}s..."
-                                sleep delay
-                            }
-                        }
-
-                        if (!success) {
-                            error("❌ DR backend health check failed after ${maxRetries} attempts on ${DR_BACKEND_HEALTH_ENDPOINT}.")
-                        }
-                        echo "DR deployment health validated."
-                    }
-                }
-            }
-            post {
-                failure {
-                    echo "❌ DR deployment or health check failed. Halting pipeline."
-                    slackSend(channel: "${SLACK_CHANNEL}", color: 'danger', message: "❌ Backend CI/CD failed at DR Deployment/Validation for build ${env.BUILD_NUMBER}: ${BUILD_URL}")
-                    currentBuild.result = 'FAILURE'
-                }
-            }
-        }
-
-        stage('⚡ Run Failover Tests') {
+        stage('✅ Validate Primary Health') {
             steps {
                 script {
-                    echo "Initiating automated failover tests..."
-                    // This stage requires a dedicated script (e.g., Python, Bash) that orchestrates the failover.
-                    // It should:
-                    // 1. Simulate primary region failure (e.g., scaling down primary backend, or changing DNS/LB route)
-                    // 2. Verify traffic switches to DR (e.g., pinging public endpoint and asserting it's served by DR)
-                    // 3. Run a comprehensive suite of end-to-end tests against the DR endpoint.
-                    // 4. Record RTO/RPO metrics.
-                    // 5. Clean up/restore primary if it was modified.
+                    echo "🔍 Validating backend health via temporary port-forward..."
 
-                    // Make sure 'config/tests/failover_tests/run_failover.py' exists in your config repo.
-                    withCredentials([file(credentialsId: "${PRIMARY_KUBECONFIG_ID}", variable: 'PRIMARY_KC_PATH'),
-                                     file(credentialsId: "${DR_KUBECONFIG_ID}", variable: 'DR_KC_PATH')]) {
-                        sh "python config/tests/failover_tests/run_failover.py " +
-                           "--primary-kubeconfig ${PRIMARY_KC_PATH} " +
-                           "--dr-kubeconfig ${DR_KC_PATH} " +
-                           "--primary-endpoint ${PRIMARY_BACKEND_HEALTH_ENDPOINT} " + // Pass the actual health endpoint
-                           "--dr-endpoint ${DR_BACKEND_HEALTH_ENDPOINT}"
+                    // Start port-forwarding in background
+                    sh "kubectl port-forward service/backend 5000:5000 -n default > /tmp/jenkins-portforward.log 2>&1 & echo \$! > /tmp/jenkins-backend.pid"
+
+                    // Wait until port-forward is active (check log)
+                    timeout(time: 15, unit: 'SECONDS') {
+                        waitUntil {
+                            script {
+                                def output = sh(script: "grep -m1 'Forwarding from' /tmp/jenkins-portforward.log || true", returnStdout: true).trim()
+                                return output.contains("Forwarding from")
+                            }
+                        }
                     }
-                    echo "Failover tests completed successfully."
-                }
-            }
-            post {
-                failure {
-                    echo "❌ Failover tests failed! DR readiness is compromised."
-                    slackSend(channel: "${SLACK_CHANNEL}", color: 'danger', message: "❌ Backend CI/CD failed at Failover Tests for build ${env.BUILD_NUMBER}: ${BUILD_URL} - DR Readiness COMPROMISED!")
-                    currentBuild.result = 'FAILURE'
-                }
-                always {
-                    echo "Failover test stage finished. Ensuring cleanup if necessary."
-                    // Add cleanup steps if your failover test modifies the environment
-                }
-            }
-        }
 
-        stage('📄 Generate DR Readiness Reports') {
-            steps {
-                script {
-                    echo "Generating DR readiness report..."
-                    def drReportContent = """
-                    # DR Readiness Report for Backend Application - Build #${env.BUILD_NUMBER}
-                    ## Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
+                    def maxRetries = 5
+                    def delay = 5
+                    def success = false
 
-                    ---
+                    for (int i = 1; i <= maxRetries; i++) {
+                        def response = sh(
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/api/products || echo '000'",
+                            returnStdout: true
+                        ).trim()
 
-                    ### Pipeline Stages Status:
-                    - Infrastructure Validation (Terraform Plan): ${currentBuild.result}
-                    - Primary Deployment & Health Check: ${currentBuild.result}
-                    - DR Deployment & Health Check: ${currentBuild.result}
-                    - Failover Tests: ${currentBuild.result}
+                        if (response == "200") {
+                            echo "✅ Backend is healthy (HTTP 200)"
+                            success = true
+                            break
+                        } else {
+                            echo "🔁 Attempt ${i}/${maxRetries}: Got ${response}, retrying in ${delay}s..."
+                            sleep delay
+                        }
+                    }
 
-                    ### Failover Test Summary:
-                    (Details from your `run_failover.py` script's output would go here.
-                    You can capture its output in a variable and include it. e.g.,
-                    `def failover_output = sh(script: '...', returnStdout: true)` and then embed `failover_output`.)
+                    // Kill the port-forward process
+                    sh "kill \$(cat /tmp/jenkins-backend.pid) || true"
 
-                    - *Simulated Primary Failure*: Successful (Assumed if test passed)
-                    - *Traffic Rerouted to DR*: Confirmed (Assumed if test passed)
-                    - *DR Application Functionality*: Verified (Assumed if test passed)
-
-                    ### Key Metrics (Placeholder - needs to be measured by tests):
-                    - **RTO (Recovery Time Objective) Achieved**: <Insert Measured RTO e.g., 5 minutes>
-                    - **RPO (Recovery Point Objective) Achieved**: <Insert Measured RPO e.g., 1 minute>
-
-                    ---
-
-                    ### Recommendations:
-                    - If any stage above failed, investigate and resolve the issue immediately.
-                    - Regularly review and update failover test scenarios.
-                    - Ensure RTO/RPO targets are consistently met.
-
-                    """
-                    writeFile file: 'dr_readiness_report.md', text: drReportContent
-                    archiveArtifacts artifacts: 'dr_readiness_report.md', fingerprint: true
-                    echo "DR readiness report generated and archived."
+                    if (!success) {
+                        error("❌ Backend health check failed after ${maxRetries} attempts.")
+                    }
                 }
             }
         }
     }
 
     post {
-        always {
-            cleanWs() // Clean up the workspace after the build
-        }
         success {
-            echo "✅ Backend CI/CD pipeline finished successfully!"
+            echo "✅ Backend image pushed and deployment updated."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed to Primary and DR. DR Readiness Confirmed!"}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
                 """
             }
         }
 
         aborted {
-            echo "⏹️ Pipeline aborted (no backend changes)."
+            echo "⏹️ Pipeline aborted (no backend changes)"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected for build ${env.BUILD_NUMBER}."}' $SLACK_WEBHOOK
+                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
                 """
             }
         }
 
         failure {
-            echo "❌ Pipeline failed."
+            echo "❌ Pipeline failed"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* CI/CD pipeline failed for build ${env.BUILD_NUMBER}. Check Jenkins logs: ${BUILD_URL}"}' $SLACK_WEBHOOK
+                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
                 """
             }
         }
     }
 }
-```
