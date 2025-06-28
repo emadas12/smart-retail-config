@@ -14,7 +14,7 @@ pipeline {
         ARGOCD_CREDS_ID = 'argocd-admin-password'
 
         // ✅ ArgoCD Internal DNS (no port-forwarding needed)
-        ARGOCD_SERVER_ADDRESS = 'argocd-server.argocd.svc.cluster.local:443'
+        ARGOCD_SERVER_ADDRESS = 'localhost:8080'
     }
 
     options {
