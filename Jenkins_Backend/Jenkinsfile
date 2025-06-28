@@ -17,7 +17,6 @@ pipeline {
     }
 
     stages {
-
         stage('📥 Clone Dev Repo') {
             steps {
                 dir('dev') {
@@ -38,14 +37,15 @@ pipeline {
             steps {
                 dir('dev') {
                     script {
-                        def changed = sh(
+                        def backendChanged = sh(
                             script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
                             returnStatus: true
                         ) == 0
-                        if (!changed) {
-                            echo "⚠️ No changes in backend/"
+
+                        if (!backendChanged) {
+                            echo "⚠️ No changes in backend code. Aborting..."
                             currentBuild.result = 'ABORTED'
-                            error("No backend changes, aborting pipeline.")
+                            error("No changes in backend/")
                         }
                     }
                 }
@@ -56,6 +56,7 @@ pipeline {
             steps {
                 dir('dev') {
                     script {
+                        echo "📦 Building image ${IMAGE_NAME}:${TAG}"
                         docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
                     }
                 }
@@ -75,19 +76,24 @@ pipeline {
             }
         }
 
-        stage('✏️ Update deployment.yaml') {
+        stage('✏️ Update Deployment YAML') {
             steps {
                 dir('config') {
                     script {
+                        def filePath = "k8s/backend/deployment.yaml"
+                        def newImage = "${IMAGE_NAME}:${TAG}"
+                        echo "🔧 Updating ${filePath} with new image: ${newImage}"
+
                         sh """
-                            sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' k8s/backend/deployment.yaml
+                            sed -i 's|image:.*|image: ${newImage}|' ${filePath}
                         """
+                        sh "cat ${filePath}"
                     }
                 }
             }
         }
 
-        stage('📤 Commit & Push Config Updates') {
+        stage('📤 Commit & Push Changes') {
             steps {
                 dir('config') {
                     withCredentials([string(credentialsId: "${GITHUB_PUSH_TOKEN_ID}", variable: 'GIT_TOKEN')]) {
@@ -96,12 +102,13 @@ pipeline {
                                 git config user.email "rani.saed19@gmail.com"
                                 git config user.name "Rani Saed (CI/CD)"
                                 git add k8s/backend/deployment.yaml
+
                                 if ! git diff --cached --quiet; then
                                     git commit -m "🚀 Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
                                     git push origin main
                                 else
-                                    echo "No changes to commit."
+                                    echo "No changes to commit"
                                 fi
                             """
                         }
@@ -110,35 +117,29 @@ pipeline {
             }
         }
 
-        stage('✅ Health Check (via port-forward)') {
+        stage('✅ Health Check (Backend)') {
             steps {
                 script {
-                    echo "🚀 Starting port-forward for backend service..."
+                    echo "🚀 Port-forward backend service and test health"
 
-                    sh """
-                        nohup kubectl port-forward service/backend 5000:5000 -n default > pf.log 2>&1 &
-                        echo \$! > pf.pid
+                    sh '''
+                        kubectl port-forward svc/backend 5000:5000 -n default > pf.log 2>&1 &
+                        echo $! > pf.pid
                         sleep 5
-                    """
 
-                    def success = false
-                    for (int i = 1; i <= 5; i++) {
-                        def res = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/health", returnStdout: true).trim()
-                        if (res == "200") {
-                            echo "✅ Backend is healthy (HTTP 200)"
-                            success = true
-                            break
-                        } else {
-                            echo "❌ Attempt $i/5 failed (got $res), retrying in 3s..."
-                            sleep 3
-                        }
-                    }
+                        for i in {1..5}; do
+                            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/health || true)
+                            if [ "$STATUS" = "200" ]; then
+                                echo "✅ Backend is healthy"
+                                break
+                            else
+                                echo "🔁 Attempt $i: Got HTTP $STATUS"
+                                sleep 2
+                            fi
+                        done
 
-                    sh "kill \$(cat pf.pid) || true"
-
-                    if (!success) {
-                        error("❌ Health check failed at http://localhost:5000/health")
-                    }
+                        kill $(cat pf.pid)
+                    '''
                 }
             }
         }
@@ -146,32 +147,32 @@ pipeline {
 
     post {
         success {
-            echo "✅ CI/CD pipeline succeeded!"
+            echo "✅ Backend image pushed and deployment updated."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh '''
+                sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* pipeline succeeded. Image: '"${IMAGE_NAME}:${TAG}"'"}' "$SLACK_WEBHOOK"
-                '''
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
+                """
             }
         }
 
         aborted {
-            echo "⚠️ Pipeline aborted (no changes)"
+            echo "⏹️ Pipeline aborted (no backend changes)"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh '''
+                sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no code changes."}' "$SLACK_WEBHOOK"
-                '''
+                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                """
             }
         }
 
         failure {
-            echo "❌ CI/CD pipeline failed"
+            echo "❌ Pipeline failed"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh '''
+                sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' "$SLACK_WEBHOOK"
-                '''
+                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                """
             }
         }
     }
