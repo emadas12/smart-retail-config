@@ -1,4 +1,4 @@
-// Jenkinsfile (Fixed and Improved Version)
+// Jenkinsfile (Fixed Version)
 
 pipeline {
     agent any // Runs on any available Jenkins agent
@@ -33,8 +33,7 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '5'))
         // Sets a maximum timeout for the entire pipeline to 20 minutes
         timeout(time: 20, unit: 'MINUTES')
-        // Add timestamps to console output
-        timestamps()
+        // REMOVED: timestamps() - This is not a valid option here. Timestamps are often enabled globally or via a wrapper.
     }
 
     stages {
@@ -82,8 +81,8 @@ pipeline {
             steps {
                 dir('dev') { // Ensure we are in the 'dev' directory where the Dockerfile and context are
                     echo "📦 Building Docker image: ${IMAGE_NAME}:${TAG}"
-                    // Build the Docker image, specifying the Dockerfile path relative to 'dev' and build context '.'
-                    docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile .")
+                    // Changed from docker.build to sh "docker build" to resolve "Method calls on objects not allowed" error
+                    sh "docker build -t ${IMAGE_NAME}:${TAG} -f backend/Dockerfile ."
                 }
             }
         }
@@ -92,12 +91,12 @@ pipeline {
             steps {
                 // Use Jenkins credentials to log in to Docker Hub securely
                 withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    script { // 'script' block for explicit docker.withRegistry call
-                        docker.withRegistry("https://index.docker.io/v1/", DOCKER_CREDENTIALS_ID) {
-                            echo "🚀 Pushing image ${IMAGE_NAME}:${TAG} to Docker Hub..."
-                            docker.image("${IMAGE_NAME}:${TAG}").push()
-                        }
-                    }
+                    echo "🚀 Logging into Docker Hub and pushing image ${IMAGE_NAME}:${TAG}..."
+                    // Changed from docker.withRegistry/docker.image().push() to sh commands
+                    sh "echo \"${DOCKER_PASS}\" | docker login -u ${DOCKER_USER} --password-stdin"
+                    sh "docker push ${IMAGE_NAME}:${TAG}"
+                    echo "Docker image pushed to registry."
+                    sh "docker logout" // Clean up session
                 }
             }
         }
@@ -222,8 +221,8 @@ pipeline {
             // Send Slack notification on success
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh label: 'Notify Slack (Success)', script: """
-                    curl -X POST -H "Content-type: application/json" \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed. Build URL: ${env.BUILD_URL}"}' \
+                    curl -X POST -H "Content-type: application/json" \\
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed. Build URL: ${env.BUILD_URL}"}' \\
                     "${SLACK_WEBHOOK}"
                 """
             }
@@ -234,8 +233,8 @@ pipeline {
             // Send Slack notification for aborted build
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh label: 'Notify Slack (Aborted)', script: """
-                    curl -X POST -H "Content-type: application/json" \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected or manually stopped. Build URL: ${env.BUILD_URL}"}' \
+                    curl -X POST -H "Content-type: application/json" \\
+                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected or manually stopped. Build URL: ${env.BUILD_URL}"}' \\
                     "${SLACK_WEBHOOK}"
                 """
             }
@@ -246,8 +245,8 @@ pipeline {
             // Send Slack notification on failure
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh label: 'Notify Slack (Failure)', script: """
-                    curl -X POST -H "Content-type: application/json" \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs: ${env.BUILD_URL}"}' \
+                    curl -X POST -H "Content-type: application/json" \\
+                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs: ${env.BUILD_URL}"}' \\
                     "${SLACK_WEBHOOK}"
                 """
             }
