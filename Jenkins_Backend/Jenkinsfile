@@ -17,14 +17,20 @@ pipeline {
   stages {
     stage('📥 Checkout') {
       steps {
-        checkout scm
+        checkout([$class: 'GitSCM',
+          branches: [[name: '*/main']],
+          userRemoteConfigs: [[
+            url: 'https://github.com/emadas12/smart-retail-config.git',
+            credentialsId: 'github-creds'
+          ]]
+        ])
       }
     }
 
     stage('🧹 Lint + ✅ Test') {
       steps {
         echo "Running lint and test..."
-        // Example: sh 'pytest tests/' or 'flake8 app.py'
+        // Add your test/lint commands here
       }
     }
 
@@ -32,8 +38,8 @@ pipeline {
       steps {
         script {
           docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
-            def image = docker.build("${DOCKERHUB_IMAGE}:${TAG}")
-            image.push()
+            def app = docker.build("${DOCKERHUB_IMAGE}:${TAG}")
+            app.push()
           }
         }
       }
