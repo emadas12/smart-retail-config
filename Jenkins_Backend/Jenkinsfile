@@ -7,9 +7,10 @@ pipeline {
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        GITHUB_PUSH_TOKEN_ID = 'github-token'
         SLACK_CREDENTIAL_ID = 'slack-webhook'
+        GITHUB_PUSH_TOKEN_ID = 'github-token'
         PRIMARY_BACKEND_HEALTH_ENDPOINT = 'http://localhost:5000/health'
+        ARGOCD_APP_NAME = 'backend-app'
     }
 
     options {
@@ -27,7 +28,7 @@ pipeline {
             }
         }
 
-        stage('📥 Clone Config Repo') {
+        stage('📁 Clone Config Repo') {
             steps {
                 dir('config') {
                     git url: "${CONFIG_REPO_URL}", branch: 'main'
@@ -43,16 +44,16 @@ pipeline {
                             script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
                             returnStatus: true
                         ) == 0
+
                         if (!changed) {
                             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                                sh """
+                                sh '''
                                     curl -X POST -H 'Content-type: application/json' \
-                                    --data '{\"text\": \"⚠️ *Backend* pipeline aborted — no changes detected.\"}' \
-                                    \$SLACK_WEBHOOK
-                                """
+                                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                                '''
                             }
                             currentBuild.result = 'ABORTED'
-                            error("No backend changes detected.")
+                            error("No changes in backend code.")
                         }
                     }
                 }
@@ -66,14 +67,14 @@ pipeline {
                         docker.withRegistry('', "${DOCKER_CREDENTIALS_ID}") {
                             def image = docker.build("${IMAGE_NAME}:${TAG}")
                             image.push()
-                            image.push('latest')
+                            image.push("latest")
                         }
                     }
                 }
             }
         }
 
-        stage('📝 Update Deployment YAML') {
+        stage('🛠️ Update Deployment YAML') {
             steps {
                 dir('config') {
                     script {
@@ -100,7 +101,7 @@ pipeline {
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
                                     git push origin main
                                 else
-                                    echo "⚠️ No changes to commit"
+                                    echo "No changes to commit"
                                 fi
                             """
                         }
@@ -109,31 +110,36 @@ pipeline {
             }
         }
 
-        stage('🩺 Health Check') {
+        stage('🔁 ArgoCD Sync') {
             steps {
                 script {
-                    def statusCode = sh(
-                        script: "curl -s -o /dev/null -w '%{http_code}' ${PRIMARY_BACKEND_HEALTH_ENDPOINT}",
-                        returnStdout: true
-                    ).trim()
-                    if (statusCode != '200') {
-                        error("❌ Health check failed with status code: ${statusCode}")
-                    } else {
-                        echo "✅ Backend is healthy (HTTP 200)"
+                    sh "argocd app sync ${ARGOCD_APP_NAME} --insecure"
+                }
+            }
+        }
+
+        stage('🧪 Health Check') {
+            steps {
+                script {
+                    def healthCheck = sh(script: "curl -s -f ${PRIMARY_BACKEND_HEALTH_ENDPOINT}", returnStatus: true)
+                    if (healthCheck != 0) {
+                        error("Primary backend health check failed.")
                     }
                 }
             }
         }
 
-        stage('📢 Slack Success Notification') {
+        stage('🌍 Deploy to DR Region') {
             steps {
-                withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                    sh """
-                        curl -X POST -H 'Content-type: application/json' \
-                        --data '{\"text\": \"✅ *Backend* pipeline succeeded! Image: ${IMAGE_NAME}:${TAG}\"}' \
-                        \$SLACK_WEBHOOK
-                    """
+                script {
+                    sh "argocd app sync dr-backend-app --insecure"
                 }
+            }
+        }
+
+        stage('🔥 Run Failover Test') {
+            steps {
+                sh 'bash scripts/failover-check.sh'
             }
         }
     }
@@ -141,10 +147,17 @@ pipeline {
     post {
         failure {
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh '''
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                '''
+            }
+        }
+        success {
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{\"text\": \"❌ *Backend* pipeline failed. Check Jenkins logs.\"}' \
-                    \$SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* pipeline succeeded — deployed version: ${TAG}"}' $SLACK_WEBHOOK
                 """
             }
         }
