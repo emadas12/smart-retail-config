@@ -18,7 +18,7 @@ pipeline {
         // Examples:
         // - If ArgoCD is in the same K8s cluster: "argocd-server.argocd.svc.cluster.local:8080"
         // - If ArgoCD has an external IP/DNS: "my-argocd.example.com:8080"
-        ARGOCD_SERVER_ADDRESS = 'YOUR_ARGOCD_SERVER_ADDRESS:PORT' // <--- **YOU MUST CHANGE THIS**
+        ARGOCD_SERVER_ADDRESS = 'localhost:8080'
     }
 
     options {
