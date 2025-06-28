@@ -12,7 +12,7 @@ pipeline {
         GITHUB_CREDENTIAL_ID  = 'github-push-token'
         ARGOCD_CREDS_ID       = 'argocd-admin-password'
 
-        ARGOCD_SERVER_ADDRESS = 'localhost:8080'  // חייב שיהיה פורט פורוורד פעיל!
+        ARGOCD_SERVER_ADDRESS = 'host.docker.internal:8080'  // חייב שיהיה פורט פורוורד פעיל!
     }
 
     options {
