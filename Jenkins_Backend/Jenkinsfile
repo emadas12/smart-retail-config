@@ -6,8 +6,15 @@ pipeline {
         TAG = "build-${env.BUILD_NUMBER}"
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
         SLACK_CREDENTIAL_ID = 'slack-webhook'
+        GITHUB_PUSH_TOKEN_ID = 'github-push-token'
+
+        ARGOCD_ADMIN_CREDS_ID = 'argocd-admin-password'
+        ARGOCD_SERVER = "localhost:8080"
+        BACKEND_APP_PRIMARY = "backend-app"
+        PRIMARY_BACKEND_HEALTH_ENDPOINT = "http://localhost:5000/api/products"
     }
 
     options {
@@ -68,7 +75,6 @@ pipeline {
                     script {
                         docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
                         }
                     }
                 }
@@ -95,7 +101,7 @@ pipeline {
         stage('📤 Commit & Push Changes') {
             steps {
                 dir('config') {
-                    withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
+                    withCredentials([string(credentialsId: "${GITHUB_PUSH_TOKEN_ID}", variable: 'GIT_TOKEN')]) {
                         script {
                             sh """
                                 git config user.email "rani.saed19@gmail.com"
@@ -115,35 +121,96 @@ pipeline {
                 }
             }
         }
+
+        stage('📡 Deploy via ArgoCD') {
+            environment {
+                ARGOCD_APP = 'backend-app'
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${ARGOCD_ADMIN_CREDS_ID}", usernameVariable: 'ARGOCD_USER', passwordVariable: 'ARGOCD_PASS')]) {
+                    script {
+                        echo "🚀 Port-forwarding ArgoCD Server..."
+                        sh "kubectl port-forward svc/argocd-server -n argocd 8080:80 > /tmp/argo-pf.log 2>&1 & echo \$! > /tmp/argo-pf.pid"
+
+                        timeout(time: 15, unit: 'SECONDS') {
+                            waitUntil {
+                                script {
+                                    return sh(script: "grep -m1 'Forwarding from' /tmp/argo-pf.log", returnStatus: true) == 0
+                                }
+                            }
+                        }
+
+                        sh "argocd login localhost:8080 --username \$ARGOCD_USER --password \$ARGOCD_PASS --insecure"
+                        sh "argocd app sync ${ARGOCD_APP}"
+                        sh "argocd logout localhost:8080"
+                        sh "kill \$(cat /tmp/argo-pf.pid) || true"
+                    }
+                }
+            }
+        }
+
+        stage('✅ Validate Primary Health') {
+            steps {
+                script {
+                    def maxRetries = 10
+                    def delay = 10
+                    def success = false
+
+                    for (int i = 1; i <= maxRetries; i++) {
+                        def response = sh(
+                            script: "curl -s -o /dev/null -w '%{http_code}' ${PRIMARY_BACKEND_HEALTH_ENDPOINT} || echo 'HTTP_FAIL'",
+                            returnStdout: true
+                        ).trim()
+
+                        if (response == "200") {
+                            echo "✅ Backend primary endpoint is healthy (HTTP 200)."
+                            success = true
+                            break
+                        } else {
+                            echo "🔁 Attempt ${i}/${maxRetries}: Got ${response}, retrying in ${delay}s..."
+                            sleep delay
+                        }
+                    }
+
+                    if (!success) {
+                        error("❌ Health check failed after ${maxRetries} attempts on ${PRIMARY_BACKEND_HEALTH_ENDPOINT}.")
+                    }
+                }
+            }
+        }
     }
 
     post {
+        always {
+            cleanWs()
+        }
         success {
             echo "✅ Backend image pushed and deployment updated."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
+                sh label: 'Notify Slack (Success)', script: """
+                    curl -X POST -H "Content-type: application/json" \
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' \
+                    "${SLACK_WEBHOOK}"
                 """
             }
         }
-
         aborted {
             echo "⏹️ Pipeline aborted (no backend changes)"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                sh label: 'Notify Slack (Aborted)', script: """
+                    curl -X POST -H "Content-type: application/json" \
+                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' \
+                    "${SLACK_WEBHOOK}"
                 """
             }
         }
-
         failure {
             echo "❌ Pipeline failed"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                sh label: 'Notify Slack (Failure)', script: """
+                    curl -X POST -H "Content-type: application/json" \
+                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs: ${BUILD_URL}"}' \
+                    "${SLACK_WEBHOOK}"
                 """
             }
         }
