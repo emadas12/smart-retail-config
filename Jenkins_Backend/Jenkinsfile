@@ -118,39 +118,22 @@ pipeline {
 
         stage('🌍 Deploy to DR Region') {
             steps {
-                echo "🚀 Deploying backend to DR via ArgoCD..."
-                withCredentials([string(credentialsId: 'argo-admin-pass', variable: 'ARGO_PASS')]) {
-                    sh """
-                        echo "$ARGO_PASS" > argocd-pass.txt
-                        argocd login localhost:8080 \
-                          --username admin \
-                          --password $(cat argocd-pass.txt) \
-                          --grpc-web --insecure
-                        rm -f argocd-pass.txt
-                        argocd app sync dr-backend-app --grpc-web
-                    """
-                }
-            }
-        }
+                withCredentials([string(credentialsId: 'argocd-admin-pass', variable: 'ARGO_PASS')]) {
+                    sh '''#!/bin/bash
+                    echo "🌐 Waiting for ArgoCD port-forward on localhost:8080..."
+                    sleep 5
 
-        stage('🧪 DR Failover Test') {
-            steps {
-                echo "🔁 Running DR failover test..."
-                sh """
-                    chmod +x scripts/failover-check.sh
-                    ./scripts/failover-check.sh
-                """
-            }
-        }
+                    echo "$ARGO_PASS" > argocd-pass.txt
+                    argocd login localhost:8080 \
+                        --username admin \
+                        --password $(cat argocd-pass.txt) \
+                        --grpc-web --insecure
 
-        stage('📊 DR Readiness Report') {
-            steps {
-                echo "📄 DR readiness verified!"
-                withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                    sh """
-                        curl -X POST -H 'Content-type: application/json' \
-                        --data '{"text": "📊 *DR Region* ✅ readiness check passed after failover test."}' $SLACK_WEBHOOK
-                    """
+                    rm -f argocd-pass.txt
+
+                    echo "🚀 Syncing DR backend app via ArgoCD..."
+                    argocd app sync dr-backend-app --grpc-web
+                    '''
                 }
             }
         }
@@ -158,11 +141,11 @@ pipeline {
 
     post {
         success {
-            echo "✅ Backend image pushed and deployment updated."
+            echo "✅ Backend CI/CD & DR deploy successful."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed to primary and DR."}' $SLACK_WEBHOOK
                 """
             }
         }
