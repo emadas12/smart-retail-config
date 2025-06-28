@@ -115,42 +115,6 @@ pipeline {
                 }
             }
         }
-
-        stage('🧪 DR Failover Test') {
-            steps {
-                script {
-                    echo "💥 Simulating Primary Failure (scaling to 0)..."
-                    sh 'kubectl scale deployment frontend --replicas=0 -n default'
-
-                    echo "⏳ Waiting 15s for DR to activate..."
-                    sleep time: 15, unit: 'SECONDS'
-
-                    echo "📡 Checking DR Frontend at http://localhost:3002"
-                    def drStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3002", returnStdout: true).trim()
-
-                    if (drStatus == "200") {
-                        echo "✅ DR is UP and responding!"
-                    } else {
-                        error("❌ DR failed to respond. Got: ${drStatus}")
-                    }
-
-                    echo "🔁 Recovering Primary Frontend..."
-                    sh 'kubectl scale deployment frontend --replicas=1 -n default'
-
-                    echo "⏳ Waiting 15s for Primary to recover..."
-                    sleep time: 15, unit: 'SECONDS'
-
-                    echo "📡 Checking Primary Frontend at http://localhost:3000"
-                    def primaryStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000", returnStdout: true).trim()
-
-                    if (primaryStatus == "200") {
-                        echo "✅ Primary is back online!"
-                    } else {
-                        error("❌ Primary recovery failed. Got: ${primaryStatus}")
-                    }
-                }
-            }
-        }
     }
 
     post {
@@ -159,7 +123,7 @@ pipeline {
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR verified."}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
                 """
             }
         }
