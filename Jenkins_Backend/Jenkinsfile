@@ -42,9 +42,9 @@ pipeline {
                         ) == 0
 
                         if (!backendChanged) {
-                            echo "ℹ️ No changes in backend code. Skipping build..."
-                            currentBuild.result = 'SUCCESS' // כדי לא לקבל ABORTED
-                            return
+                            echo "⚠️ No changes in backend code. Aborting..."
+                            currentBuild.result = 'ABORTED'
+                            error("No changes in backend/")
                         }
                     }
                 }
@@ -64,9 +64,9 @@ pipeline {
 
         stage('🚀 Push to Docker Hub') {
             steps {
-                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     script {
-                        docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
+                        docker.withRegistry("https://index.docker.io/v1/", DOCKER_CREDENTIALS_ID) {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
                             docker.image("${IMAGE_NAME}:${TAG}").push("latest")
                         }
@@ -164,31 +164,34 @@ pipeline {
     post {
         success {
             echo "✅ Backend image pushed and deployment updated."
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh(
-                    script: 'curl -X POST -H "Content-type: application/json" --data \'{"text": "✅ *Backend* CI/CD succeeded — *' + TAG + '* deployed."}\' "$SLACK_WEBHOOK"',
-                    label: 'Notify Slack (Success)'
-                )
+            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+                sh label: 'Notify Slack (Success)', script: '''
+                    curl -X POST -H "Content-type: application/json" \
+                    --data "{\"text\": \"✅ *Backend* CI/CD succeeded — *${TAG}* deployed.\"}" \
+                    "$SLACK_WEBHOOK"
+                '''
             }
         }
 
         aborted {
-            echo "⏹️ Pipeline aborted (manual)"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh(
-                    script: 'curl -X POST -H "Content-type: application/json" --data \'{"text": "⚠️ *Backend* pipeline was manually aborted."}\' "$SLACK_WEBHOOK"',
-                    label: 'Notify Slack (Aborted)'
-                )
+            echo "⏹️ Pipeline aborted (no backend changes)"
+            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+                sh label: 'Notify Slack (Aborted)', script: '''
+                    curl -X POST -H "Content-type: application/json" \
+                    --data "{\"text\": \"⚠️ *Backend* pipeline aborted — no changes detected.\"}" \
+                    "$SLACK_WEBHOOK"
+                '''
             }
         }
 
         failure {
             echo "❌ Pipeline failed"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh(
-                    script: 'curl -X POST -H "Content-type: application/json" --data \'{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}\' "$SLACK_WEBHOOK"',
-                    label: 'Notify Slack (Failure)'
-                )
+            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+                sh label: 'Notify Slack (Failure)', script: '''
+                    curl -X POST -H "Content-type: application/json" \
+                    --data "{\"text\": \"❌ *Backend* pipeline failed. Check Jenkins logs.\"}" \
+                    "$SLACK_WEBHOOK"
+                '''
             }
         }
     }
