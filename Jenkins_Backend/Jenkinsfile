@@ -18,7 +18,7 @@ pipeline {
         // Examples:
         // - If ArgoCD is in the same K8s cluster: "argocd-server.argocd.svc.cluster.local:8080"
         // - If ArgoCD has an external IP/DNS: "my-argocd.example.com:8080"
-        ARGOCD_SERVER_ADDRESS = 'localhost:8080'
+        ARGOCD_SERVER_ADDRESS = 'YOUR_ARGOCD_SERVER_ADDRESS:PORT' // <--- **YOU MUST CHANGE THIS**
     }
 
     options {
@@ -122,8 +122,8 @@ pipeline {
                 withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
                     script {
                         echo "🚀 Deploying backend to DR via ArgoCD..."
-                        // --- FIX APPLIED HERE ---
-                        sh "argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --password ${ARGO_PASS} --grpc-web --insecure"
+                        // --- FIX APPLIED HERE: Pass password via stdin for security ---
+                        sh "echo ${ARGO_PASS} | argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --grpc-web --insecure"
                         sh "argocd app sync dr-backend-app --grpc-web"
                     }
                 }
