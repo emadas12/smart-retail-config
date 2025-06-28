@@ -119,7 +119,11 @@ pipeline {
         stage('✅ Validate Primary Health') {
             steps {
                 script {
-                    echo "🔍 Validating backend deployment health..."
+                    echo "🔍 Validating backend health via temporary port-forward..."
+
+                    // Start port-forwarding in background
+                    sh "kubectl port-forward service/backend 5000:5000 -n default > /tmp/jenkins-portforward.log 2>&1 & echo \$! > /tmp/jenkins-backend.pid"
+                    sleep 5
 
                     def maxRetries = 5
                     def delay = 5
@@ -140,6 +144,9 @@ pipeline {
                             sleep delay
                         }
                     }
+
+                    // Kill the port-forward process
+                    sh "kill \$(cat /tmp/jenkins-backend.pid) || true"
 
                     if (!success) {
                         error("❌ Backend health check failed after ${maxRetries} attempts.")
