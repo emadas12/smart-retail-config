@@ -121,10 +121,8 @@ pipeline {
                 script {
                     echo "🔍 Validating backend health via temporary port-forward..."
 
-                    // Start port-forwarding in background
                     sh "kubectl port-forward service/backend 5000:5000 -n default > /tmp/jenkins-portforward.log 2>&1 & echo \$! > /tmp/jenkins-backend.pid"
 
-                    // Wait until port-forward is active (check log output correctly!)
                     timeout(time: 15, unit: 'SECONDS') {
                         waitUntil {
                             script {
@@ -153,7 +151,6 @@ pipeline {
                         }
                     }
 
-                    // Kill the port-forward process
                     sh "kill \$(cat /tmp/jenkins-backend.pid) || true"
 
                     if (!success) {
@@ -168,30 +165,30 @@ pipeline {
         success {
             echo "✅ Backend image pushed and deployment updated."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
-                """
+                sh(
+                    script: 'curl -X POST -H "Content-type: application/json" --data \'{"text": "✅ *Backend* CI/CD succeeded — *' + TAG + '* deployed."}\' "$SLACK_WEBHOOK"',
+                    label: 'Notify Slack (Success)'
+                )
             }
         }
 
         aborted {
             echo "⏹️ Pipeline aborted (no backend changes)"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
-                """
+                sh(
+                    script: 'curl -X POST -H "Content-type: application/json" --data \'{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}\' "$SLACK_WEBHOOK"',
+                    label: 'Notify Slack (Aborted)'
+                )
             }
         }
 
         failure {
             echo "❌ Pipeline failed"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
-                """
+                sh(
+                    script: 'curl -X POST -H "Content-type: application/json" --data \'{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}\' "$SLACK_WEBHOOK"',
+                    label: 'Notify Slack (Failure)'
+                )
             }
         }
     }
