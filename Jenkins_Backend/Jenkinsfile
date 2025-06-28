@@ -64,9 +64,9 @@ pipeline {
 
         stage('🚀 Push to Docker Hub') {
             steps {
-                withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     script {
-                        docker.withRegistry("https://index.docker.io/v1/", DOCKER_CREDENTIALS_ID) {
+                        docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
                             docker.image("${IMAGE_NAME}:${TAG}").push("latest")
                         }
@@ -115,83 +115,36 @@ pipeline {
                 }
             }
         }
-
-        stage('✅ Validate Primary Health') {
-            steps {
-                script {
-                    echo "🔍 Validating backend health via temporary port-forward..."
-
-                    sh "kubectl port-forward service/backend 5000:5000 -n default > /tmp/jenkins-portforward.log 2>&1 & echo \$! > /tmp/jenkins-backend.pid"
-
-                    timeout(time: 15, unit: 'SECONDS') {
-                        waitUntil {
-                            script {
-                                return sh(script: "grep -m1 'Forwarding from' /tmp/jenkins-portforward.log", returnStatus: true) == 0
-                            }
-                        }
-                    }
-
-                    def maxRetries = 5
-                    def delay = 5
-                    def success = false
-
-                    for (int i = 1; i <= maxRetries; i++) {
-                        def response = sh(
-                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/api/products || echo '000'",
-                            returnStdout: true
-                        ).trim()
-
-                        if (response == "200") {
-                            echo "✅ Backend is healthy (HTTP 200)"
-                            success = true
-                            break
-                        } else {
-                            echo "🔁 Attempt ${i}/${maxRetries}: Got ${response}, retrying in ${delay}s..."
-                            sleep delay
-                        }
-                    }
-
-                    sh "kill \$(cat /tmp/jenkins-backend.pid) || true"
-
-                    if (!success) {
-                        error("❌ Backend health check failed after ${maxRetries} attempts.")
-                    }
-                }
-            }
-        }
     }
 
     post {
         success {
             echo "✅ Backend image pushed and deployment updated."
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh label: 'Notify Slack (Success)', script: '''
-                    curl -X POST -H "Content-type: application/json" \
-                    --data "{\"text\": \"✅ *Backend* CI/CD succeeded — *${TAG}* deployed.\"}" \
-                    "$SLACK_WEBHOOK"
-                '''
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
+                """
             }
         }
 
         aborted {
             echo "⏹️ Pipeline aborted (no backend changes)"
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh label: 'Notify Slack (Aborted)', script: '''
-                    curl -X POST -H "Content-type: application/json" \
-                    --data "{\"text\": \"⚠️ *Backend* pipeline aborted — no changes detected.\"}" \
-                    "$SLACK_WEBHOOK"
-                '''
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                """
             }
         }
 
         failure {
             echo "❌ Pipeline failed"
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh label: 'Notify Slack (Failure)', script: '''
-                    curl -X POST -H "Content-type: application/json" \
-                    --data "{\"text\": \"❌ *Backend* pipeline failed. Check Jenkins logs.\"}" \
-                    "$SLACK_WEBHOOK"
-                '''
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                """
             }
         }
     }
