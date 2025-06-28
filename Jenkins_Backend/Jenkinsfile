@@ -9,7 +9,7 @@ pipeline {
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
         SLACK_CREDENTIAL_ID = 'slack-webhook'
         GITHUB_PUSH_TOKEN_ID = 'github-push-token'
-        HEALTH_URL = 'http://localhost:5000/health'
+        HEALTH_URL = 'http://backend.default.svc.cluster.local:5000/health'
     }
 
     options {
