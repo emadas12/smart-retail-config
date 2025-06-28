@@ -4,7 +4,6 @@ pipeline {
     environment {
         IMAGE_NAME = 'rani19/backend'
         TAG = "build-${env.BUILD_NUMBER}"
-
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
 
@@ -13,8 +12,10 @@ pipeline {
         GITHUB_CREDENTIAL_ID = 'github-push-token'
         ARGOCD_CREDS_ID = 'argocd-admin-password'
 
-        // ✅ ArgoCD Internal DNS (no port-forwarding needed)
-        ARGOCD_SERVER_ADDRESS = 'localhost:8080'
+        // --- NEW: ArgoCD Server Address Variable ---
+        // Based on 'kubectl get svc -n argocd' output for 'argocd-server' service
+        // Using internal cluster DNS and port 80 for HTTP access (due to --insecure)
+        ARGOCD_SERVER_ADDRESS = 'argocd-server.argocd.svc.cluster.local:80' // <--- Updated based on your output
     }
 
     options {
@@ -70,7 +71,7 @@ pipeline {
                     script {
                         docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:latest").push()
+                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
                         }
                     }
                 }
@@ -98,6 +99,7 @@ pipeline {
                                 git config user.name "Rani Saed (CI/CD)"
                                 git config user.email "rani.saed19@gmail.com"
                                 git add k8s/backend/deployment.yaml
+                                
                                 if ! git diff --cached --quiet; then
                                     git commit -m "🚀 Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
@@ -117,10 +119,13 @@ pipeline {
                 withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
                     script {
                         echo "🚀 Deploying backend to DR via ArgoCD..."
+                        // Pass password securely via stdin using 'read -s' to avoid Groovy interpolation warning
                         sh """
-                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --password ${ARGO_PASS} --grpc-web --insecure
-                            argocd app sync dr-backend-app --grpc-web
+                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --grpc-web --insecure <<EOF
+                            ${ARGO_PASS}
+                            EOF
                         """
+                        sh "argocd app sync dr-backend-app --grpc-web"
                     }
                 }
             }
@@ -145,11 +150,11 @@ pipeline {
 
     post {
         success {
-            echo "✅ CI/CD pipeline succeeded"
+            echo "✅ Success"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR support."}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR."}' $SLACK_WEBHOOK
                 """
             }
         }
@@ -165,11 +170,11 @@ pipeline {
         }
 
         failure {
-            echo "❌ Pipeline failed"
+            echo "❌ Failure"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* CI/CD failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
                 """
             }
         }
