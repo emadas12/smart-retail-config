@@ -115,6 +115,45 @@ pipeline {
                 }
             }
         }
+
+        stage('🌍 Deploy to DR Region') {
+            steps {
+                echo "🚀 Deploying backend to DR via ArgoCD..."
+                withCredentials([string(credentialsId: 'argo-admin-pass', variable: 'ARGO_PASS')]) {
+                    sh """
+                        echo "$ARGO_PASS" > argocd-pass.txt
+                        argocd login localhost:8080 \
+                          --username admin \
+                          --password $(cat argocd-pass.txt) \
+                          --grpc-web --insecure
+                        rm -f argocd-pass.txt
+                        argocd app sync dr-backend-app --grpc-web
+                    """
+                }
+            }
+        }
+
+        stage('🧪 DR Failover Test') {
+            steps {
+                echo "🔁 Running DR failover test..."
+                sh """
+                    chmod +x scripts/failover-check.sh
+                    ./scripts/failover-check.sh
+                """
+            }
+        }
+
+        stage('📊 DR Readiness Report') {
+            steps {
+                echo "📄 DR readiness verified!"
+                withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                    sh """
+                        curl -X POST -H 'Content-type: application/json' \
+                        --data '{"text": "📊 *DR Region* ✅ readiness check passed after failover test."}' $SLACK_WEBHOOK
+                    """
+                }
+            }
+        }
     }
 
     post {
