@@ -6,7 +6,7 @@ pipeline {
     DOCKERHUB_IMAGE = 'emadas/smart-retail-backend'
     K8S_DEPLOYMENT = 'backend-deployment'
     K8S_NAMESPACE = 'default'
-    TAG = "v${env.BUILD_NUMBER}" // ✅ FIXED: Define TAG safely
+    TAG = "v${env.BUILD_NUMBER}"
   }
 
   options {
@@ -24,7 +24,7 @@ pipeline {
     stage('🧹 Lint + ✅ Test') {
       steps {
         echo "Running lint and test..."
-        // Add actual test commands here
+        // Example: sh 'pytest tests/' or 'flake8 app.py'
       }
     }
 
@@ -32,8 +32,8 @@ pipeline {
       steps {
         script {
           docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
-            def app = docker.build("${DOCKERHUB_IMAGE}:${TAG}")
-            app.push()
+            def image = docker.build("${DOCKERHUB_IMAGE}:${TAG}")
+            image.push()
           }
         }
       }
@@ -60,10 +60,10 @@ pipeline {
 
   post {
     success {
-      slackSend color: 'good', message: "✅ Deployment succeeded for TAG ${TAG}"
+      echo "✅ Deployment succeeded for TAG ${TAG}"
     }
     failure {
-      slackSend color: 'danger', message: "🚨 Deployment failed for TAG ${TAG}"
+      echo "❌ Deployment failed for TAG ${TAG}"
     }
   }
 }
