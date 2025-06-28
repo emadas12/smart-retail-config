@@ -14,7 +14,7 @@ pipeline {
         ARGOCD_ADMIN_CREDS_ID = 'argocd-admin-password'
         ARGOCD_SERVER = "http://localhost:8080"
         BACKEND_APP_PRIMARY = "backend-app"
-        PRIMARY_BACKEND_HEALTH_ENDPOINT = "http://backend.default.svc.cluster.local:5000/health"
+        PRIMARY_BACKEND_HEALTH_ENDPOINT = "http://localhost:5000/health"
     }
 
     options {
