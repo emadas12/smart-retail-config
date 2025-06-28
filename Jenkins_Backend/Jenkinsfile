@@ -124,12 +124,11 @@ pipeline {
                     // Start port-forwarding in background
                     sh "kubectl port-forward service/backend 5000:5000 -n default > /tmp/jenkins-portforward.log 2>&1 & echo \$! > /tmp/jenkins-backend.pid"
 
-                    // Wait until port-forward is active (check log)
+                    // Wait until port-forward is active (check log output correctly!)
                     timeout(time: 15, unit: 'SECONDS') {
                         waitUntil {
                             script {
-                                def output = sh(script: "grep -m1 'Forwarding from' /tmp/jenkins-portforward.log || true", returnStdout: true).trim()
-                                return output.contains("Forwarding from")
+                                return sh(script: "grep -m1 'Forwarding from' /tmp/jenkins-portforward.log", returnStatus: true) == 0
                             }
                         }
                     }
