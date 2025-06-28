@@ -7,7 +7,7 @@ pipeline {
         DEV_REPO_URL = 'https://github.com/emadas12/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/emadas12/smart-retail-config.git'
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        GIT_CREDENTIAL_ID = 'github-push-token'
+        GIT_CREDENTIAL_ID = 'github-creds'
         SLACK_WEBHOOK = credentials('slack-webhook')
     }
 
@@ -20,10 +20,12 @@ pipeline {
         stage('📥 Clone Repos') {
             steps {
                 dir('dev') {
-                    git url: "${DEV_REPO_URL}", branch: 'main'
+                    git url: "${DEV_REPO_URL}", branch: 'main', credentialsId: 'github-creds'
+
                 }
                 dir('config') {
-                    git url: "${CONFIG_REPO_URL}", branch: 'main'
+                    git url: "${CONFIG_REPO_URL}", branch: 'main', credentialsId: 'github-creds'
+
                 }
             }
         }
