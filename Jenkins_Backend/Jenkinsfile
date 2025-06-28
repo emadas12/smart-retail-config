@@ -1,183 +1,181 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        IMAGE_NAME = 'rani19/backend'
-        TAG = "build-${env.BUILD_NUMBER}"
-        DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
-        CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+  environment {
+    IMAGE_NAME = 'rani19/backend'
+    TAG = "build-${env.BUILD_NUMBER}"
+    DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
 
-        DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        SLACK_CREDENTIAL_ID = 'slack-webhook'
-        GITHUB_CREDENTIAL_ID = 'github-push-token'
-        ARGOCD_CREDS_ID = 'argocd-admin-password'
+    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+    SLACK_CREDENTIAL_ID = 'slack-webhook'
+    GITHUB_CREDENTIAL_ID = 'github-push-token'
+    ARGOCD_CREDS_ID = 'argocd-admin-password'
+  }
 
-        // --- FIXED: ArgoCD Server Address Variable ---
-        // Removed 'https://' prefix. The argocd CLI handles the protocol based on port/flags.
-        // This resolves the "too many colons in address" error.
-        ARGOCD_SERVER_ADDRESS = 'argocd-server.argocd.svc.cluster.local:443' // <--- **FIXED**
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+    timeout(time: 30, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('📥 Clone Dev Repo') {
+      steps {
+        dir('dev') {
+          git url: "${DEV_REPO_URL}", branch: 'main'
+        }
+      }
     }
 
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
+    stage('📁 Clone Config Repo') {
+      steps {
+        dir('config') {
+          git url: "${CONFIG_REPO_URL}", branch: 'main'
+        }
+      }
     }
 
-    stages {
-        stage('📥 Clone Dev Repo') {
-            steps {
-                dir('dev') {
-                    git url: "${DEV_REPO_URL}", branch: 'main'
-                }
+    stage('🕵️ Check Backend Changes') {
+      steps {
+        dir('dev') {
+          script {
+            def changed = sh(script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'", returnStatus: true) == 0
+            if (!changed) {
+              echo "⚠️ No changes in backend code. Aborting..."
+              currentBuild.result = 'ABORTED'
+              error("No backend changes.")
             }
+          }
         }
-
-        stage('📁 Clone Config Repo') {
-            steps {
-                dir('config') {
-                    git url: "${CONFIG_REPO_URL}", branch: 'main'
-                }
-            }
-        }
-
-        stage('🕵️ Check Backend Changes') {
-            steps {
-                dir('dev') {
-                    script {
-                        def changed = sh(script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'", returnStatus: true) == 0
-                        if (!changed) {
-                            echo "⚠️ No changes in backend code. Aborting..."
-                            currentBuild.result = 'ABORTED'
-                            error("No backend changes.")
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('🐳 Build Docker Image') {
-            steps {
-                dir('dev') {
-                    script {
-                        docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
-                    }
-                }
-            }
-        }
-
-        stage('🚀 Push to Docker Hub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    script {
-                        docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
-                            docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('✏️ Update Deployment YAML') {
-            steps {
-                dir('config') {
-                    script {
-                        def path = "k8s/backend/deployment.yaml"
-                        sh "sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' ${path}"
-                        sh "cat ${path}"
-                    }
-                }
-            }
-        }
-
-        stage('📤 Commit & Push Changes') {
-            steps {
-                dir('config') {
-                    withCredentials([string(credentialsId: GITHUB_CREDENTIAL_ID, variable: 'GIT_TOKEN')]) {
-                        script {
-                            sh """
-                                git config user.name "Rani Saed (CI/CD)"
-                                git config user.email "rani.saed19@gmail.com"
-                                git add k8s/backend/deployment.yaml
-                                
-                                if ! git diff --cached --quiet; then
-                                    git commit -m "🚀 Update backend image to ${TAG}"
-                                    git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
-                                    git push origin main
-                                else
-                                    echo "ℹ️ No changes to commit"
-                                fi
-                            """
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('🌍 Deploy to DR Region') {
-            steps {
-                withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
-                    script {
-                        echo "🚀 Deploying backend to DR via ArgoCD..."
-                        // Pass password securely via stdin using 'read -s' to avoid Groovy interpolation warning
-                        sh """
-                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --grpc-web --insecure <<EOF
-                            ${ARGO_PASS}
-                            EOF
-                        """
-                        sh "argocd app sync dr-backend-app --grpc-web"
-                    }
-                }
-            }
-        }
-
-        stage('🧪 DR Failover Test') {
-            steps {
-                echo "🔁 Starting DR failover test..."
-                // Ensure this script exists and is executable in your 'dev' repo
-                sh 'chmod +x dev/scripts/failover-check.sh'
-                sh 'nohup bash dev/scripts/failover-check.sh > dev/failover.log 2>&1 &'
-            }
-        }
-
-        stage('📄 DR Report') {
-            steps {
-                echo "📝 Saving DR report..."
-                sh 'echo "✅ DR Success - $(date)" >> dev/failover.log'
-                archiveArtifacts artifacts: 'dev/failover.log', fingerprint: true
-            }
-        }
+      }
     }
 
-    post {
-        success {
-            echo "✅ CI/CD pipeline succeeded"
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR support."}' $SLACK_WEBHOOK
-                """
-            }
+    stage('🐳 Build Docker Image') {
+      steps {
+        dir('dev') {
+          script {
+            docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
+          }
         }
-
-        aborted {
-            echo "⚠️ Pipeline aborted"
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no backend changes."}' $SLACK_WEBHOOK
-                """
-            }
-        }
-
-        failure {
-            echo "❌ Pipeline failed"
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* CI/CD failed. Check Jenkins logs."}' $SLACK_WEBHOOK
-                """
-            }
-        }
+      }
     }
+
+    stage('🚀 Push to Docker Hub') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          script {
+            docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
+              docker.image("${IMAGE_NAME}:${TAG}").push()
+              docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+            }
+          }
+        }
+      }
+    }
+
+    stage('✏️ Update Deployment YAML') {
+      steps {
+        dir('config') {
+          script {
+            def path = "k8s/backend/deployment.yaml"
+            sh "sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' ${path}"
+            sh "cat ${path}"
+          }
+        }
+      }
+    }
+
+    stage('📤 Commit & Push Changes') {
+      steps {
+        dir('config') {
+          withCredentials([string(credentialsId: GITHUB_CREDENTIAL_ID, variable: 'GIT_TOKEN')]) {
+            script {
+              sh """
+                git config user.name "Rani Saed (CI/CD)"
+                git config user.email "rani.saed19@gmail.com"
+                git add k8s/backend/deployment.yaml
+
+                if ! git diff --cached --quiet; then
+                  git commit -m "🚀 Update backend image to ${TAG}"
+                  git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
+                  git push origin main
+                else
+                  echo "ℹ️ No changes to commit"
+                fi
+              """
+            }
+          }
+        }
+      }
+    }
+
+    stage('🌍 Deploy to DR Region') {
+      steps {
+        withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
+          script {
+            echo "🚀 Logging into ArgoCD and syncing DR backend..."
+
+            sh '''
+              # Port-forward must be active before this
+              echo "$ARGO_PASS" | argocd login localhost:8080 \
+                --username admin \
+                --password-stdin \
+                --grpc-web \
+                --insecure
+
+              argocd app sync dr-backend-app --grpc-web
+            '''
+          }
+        }
+      }
+    }
+
+    stage('🧪 DR Failover Test') {
+      steps {
+        echo "🔁 Starting DR failover test..."
+        sh 'chmod +x dev/scripts/failover-check.sh'
+        sh 'nohup bash dev/scripts/failover-check.sh > dev/failover.log 2>&1 &'
+      }
+    }
+
+    stage('📄 DR Report') {
+      steps {
+        echo "📝 Saving DR report..."
+        sh 'echo "✅ DR Success - $(date)" >> dev/failover.log'
+        archiveArtifacts artifacts: 'dev/failover.log', fingerprint: true
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ CI/CD pipeline succeeded"
+      withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+        sh """
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR support."}' $SLACK_WEBHOOK
+        """
+      }
+    }
+
+    aborted {
+      echo "⚠️ Pipeline aborted"
+      withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+        sh """
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text": "⚠️ *Backend* pipeline aborted — no backend changes."}' $SLACK_WEBHOOK
+        """
+      }
+    }
+
+    failure {
+      echo "❌ Pipeline failed"
+      withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+        sh """
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text": "❌ *Backend* CI/CD failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+        """
+      }
+    }
+  }
 }
