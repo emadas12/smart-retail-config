@@ -14,7 +14,7 @@ pipeline {
 
         // --- FIXED: ArgoCD Server Address Variable ---
         // Removed 'https://' prefix. The argocd CLI handles the protocol based on port/flags.
-        ARGOCD_SERVER_ADDRESS = 'argocd-server.argocd.svc.cluster.local:443' // <--- **FIXED**
+        ARGOCD_SERVER_ADDRESS = 'localhost:8080' // <--- **FIXED**
     }
 
     options {
