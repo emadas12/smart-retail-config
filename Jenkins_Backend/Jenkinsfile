@@ -11,6 +11,14 @@ pipeline {
         SLACK_CREDENTIAL_ID = 'slack-webhook'
         GITHUB_CREDENTIAL_ID = 'github-push-token'
         ARGOCD_CREDS_ID = 'argocd-admin-password'
+
+        // --- NEW: ArgoCD Server Address Variable ---
+        // IMPORTANT: Replace this with the actual address where your ArgoCD server is reachable
+        // from the Jenkins container.
+        // Examples:
+        // - If ArgoCD is in the same K8s cluster: "argocd-server.argocd.svc.cluster.local:8080"
+        // - If ArgoCD has an external IP/DNS: "my-argocd.example.com:8080"
+        ARGOCD_SERVER_ADDRESS = 'YOUR_ARGOCD_SERVER_ADDRESS:PORT' // <--- **YOU MUST CHANGE THIS**
     }
 
     options {
@@ -114,7 +122,8 @@ pipeline {
                 withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
                     script {
                         echo "🚀 Deploying backend to DR via ArgoCD..."
-                        sh "argocd login localhost:8080 --username admin --password ${ARGO_PASS} --grpc-web --insecure"
+                        // --- FIX APPLIED HERE ---
+                        sh "argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --password ${ARGO_PASS} --grpc-web --insecure"
                         sh "argocd app sync dr-backend-app --grpc-web"
                     }
                 }
