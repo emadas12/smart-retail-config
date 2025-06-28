@@ -4,6 +4,7 @@ pipeline {
     environment {
         IMAGE_NAME = 'rani19/backend'
         TAG = "build-${env.BUILD_NUMBER}"
+
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
 
@@ -12,13 +13,8 @@ pipeline {
         GITHUB_CREDENTIAL_ID = 'github-push-token'
         ARGOCD_CREDS_ID = 'argocd-admin-password'
 
-        // --- NEW: ArgoCD Server Address Variable ---
-        // IMPORTANT: Replace this with the actual address where your ArgoCD server is reachable
-        // from the Jenkins container.
-        // Examples:
-        // - If ArgoCD is in the same K8s cluster: "argocd-server.argocd.svc.cluster.local:8080"
-        // - If ArgoCD has an external IP/DNS: "my-argocd.example.com:8080"
-        ARGOCD_SERVER_ADDRESS = 'YOUR_ARGOCD_SERVER_ADDRESS:PORT' // <--- **YOU MUST CHANGE THIS**
+        // ✅ ArgoCD Internal DNS (no port-forwarding needed)
+        ARGOCD_SERVER_ADDRESS = 'argocd-server.argocd.svc.cluster.local:443'
     }
 
     options {
@@ -74,7 +70,7 @@ pipeline {
                     script {
                         docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+                            docker.image("${IMAGE_NAME}:latest").push()
                         }
                     }
                 }
@@ -102,7 +98,6 @@ pipeline {
                                 git config user.name "Rani Saed (CI/CD)"
                                 git config user.email "rani.saed19@gmail.com"
                                 git add k8s/backend/deployment.yaml
-                                
                                 if ! git diff --cached --quiet; then
                                     git commit -m "🚀 Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
@@ -122,9 +117,10 @@ pipeline {
                 withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
                     script {
                         echo "🚀 Deploying backend to DR via ArgoCD..."
-                        // --- FIX APPLIED HERE: Pass password via stdin for security ---
-                        sh "echo ${ARGO_PASS} | argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --grpc-web --insecure"
-                        sh "argocd app sync dr-backend-app --grpc-web"
+                        sh """
+                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --password ${ARGO_PASS} --grpc-web --insecure
+                            argocd app sync dr-backend-app --grpc-web
+                        """
                     }
                 }
             }
@@ -149,11 +145,11 @@ pipeline {
 
     post {
         success {
-            echo "✅ Success"
+            echo "✅ CI/CD pipeline succeeded"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR."}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR support."}' $SLACK_WEBHOOK
                 """
             }
         }
@@ -169,11 +165,11 @@ pipeline {
         }
 
         failure {
-            echo "❌ Failure"
+            echo "❌ Pipeline failed"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                    --data '{"text": "❌ *Backend* CI/CD failed. Check Jenkins logs."}' $SLACK_WEBHOOK
                 """
             }
         }
