@@ -115,6 +115,38 @@ pipeline {
                 }
             }
         }
+
+        stage('✅ Validate Primary Health') {
+            steps {
+                script {
+                    echo "🔍 Validating backend deployment health..."
+
+                    def maxRetries = 5
+                    def delay = 5
+                    def success = false
+
+                    for (int i = 1; i <= maxRetries; i++) {
+                        def response = sh(
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/api/products || echo '000'",
+                            returnStdout: true
+                        ).trim()
+
+                        if (response == "200") {
+                            echo "✅ Backend is healthy (HTTP 200)"
+                            success = true
+                            break
+                        } else {
+                            echo "🔁 Attempt ${i}/${maxRetries}: Got ${response}, retrying in ${delay}s..."
+                            sleep delay
+                        }
+                    }
+
+                    if (!success) {
+                        error("❌ Backend health check failed after ${maxRetries} attempts.")
+                    }
+                }
+            }
+        }
     }
 
     post {
