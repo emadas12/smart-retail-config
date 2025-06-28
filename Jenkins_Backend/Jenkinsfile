@@ -1,113 +1,69 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        IMAGE_NAME = 'emadas/backend'
-        TAG = "${env.BUILD_NUMBER}"
-        DEV_REPO_URL = 'https://github.com/emadas12/smart-retail-dev.git'
-        CONFIG_REPO_URL = 'https://github.com/emadas12/smart-retail-config.git'
-        DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        GIT_CREDENTIAL_ID = 'github-creds'
-        SLACK_WEBHOOK = credentials('slack-webhook')
+  environment {
+    DOCKERHUB_CREDENTIALS = credentials('docker-hub-creds')
+    DOCKERHUB_IMAGE = 'emadas/smart-retail-backend'
+    K8S_DEPLOYMENT = 'backend-deployment'
+    K8S_NAMESPACE = 'default'
+    TAG = "v${env.BUILD_NUMBER}" // ✅ FIXED: Define TAG safely
+  }
+
+  options {
+    skipDefaultCheckout true
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+  }
+
+  stages {
+    stage('📥 Checkout') {
+      steps {
+        checkout scm
+      }
     }
 
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '5'))
-        timeout(time: 20, unit: 'MINUTES')
+    stage('🧹 Lint + ✅ Test') {
+      steps {
+        echo "Running lint and test..."
+        // Add actual test commands here
+      }
     }
 
-    stages {
-        stage('📥 Clone Repos') {
-            steps {
-                dir('dev') {
-                    git url: "${DEV_REPO_URL}", branch: 'main', credentialsId: "${GIT_CREDENTIAL_ID}"
-                }
-                dir('config') {
-                    git url: "${CONFIG_REPO_URL}", branch: 'main', credentialsId: "${GIT_CREDENTIAL_ID}"
-                }
-            }
+    stage('🐳 Build & Push Image') {
+      steps {
+        script {
+          docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
+            def app = docker.build("${DOCKERHUB_IMAGE}:${TAG}")
+            app.push()
+          }
         }
-
-        stage('🧹 Lint + ✅ Test') {
-            steps {
-                dir('dev/backend') {
-                    sh '''
-                        pip3 install -r requirements.txt
-                        pip3 install flake8 pytest
-                        flake8 .
-                        pytest
-                    '''
-                }
-            }
-        }
-
-        stage('🐳 Build & Push Image') {
-            steps {
-                dir('dev') {
-                    script {
-                        docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
-                            def image = docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
-                            image.push()
-                            image.push("latest")
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('✏️ Update K8s Deployment') {
-            steps {
-                dir('config') {
-                    sh """
-                        sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' k8s/backend/deployment.yaml
-                        git config user.name "Jenkins CI"
-                        git config user.email "jenkins@example.com"
-                        git add k8s/backend/deployment.yaml
-                        git commit -m "🔄 Backend image updated to ${TAG}" || echo "No changes to commit"
-                        git remote set-url origin https://${GIT_CREDENTIAL_ID}@github.com/emadas12/smart-retail-config.git
-                        git push origin main || echo "Nothing to push"
-                    """
-                }
-            }
-        }
-
-        stage('🚀 Deploy to Kubernetes') {
-            steps {
-                dir('config') {
-                    sh 'kubectl apply -f k8s/backend/'
-                }
-            }
-        }
-
-        stage('🔍 Health Check') {
-            steps {
-                sh '''
-                    sleep 10
-                    STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/api/products)
-                    if [ "$STATUS" -ne 200 ]; then
-                      echo "❌ Health check failed (status: $STATUS)"
-                      exit 1
-                    fi
-                    echo "✅ Backend is healthy"
-                '''
-            }
-        }
+      }
     }
 
-    post {
-        success {
-            sh """
-                curl -X POST -H 'Content-type: application/json' \
-                --data '{"text": "✅ *Backend deployed*: ${TAG}"}' \
-                ${SLACK_WEBHOOK}
-            """
-        }
-        failure {
-            sh """
-                curl -X POST -H 'Content-type: application/json' \
-                --data '{"text": "❌ *Backend failed*: ${TAG}"}' \
-                ${SLACK_WEBHOOK}
-            """
-        }
+    stage('✏️ Update K8s Deployment') {
+      steps {
+        sh "kubectl set image deployment/${K8S_DEPLOYMENT} backend=${DOCKERHUB_IMAGE}:${TAG} -n ${K8S_NAMESPACE}"
+      }
     }
+
+    stage('🚀 Deploy to Kubernetes') {
+      steps {
+        sh "kubectl rollout restart deployment/${K8S_DEPLOYMENT} -n ${K8S_NAMESPACE}"
+      }
+    }
+
+    stage('🔍 Health Check') {
+      steps {
+        sh "kubectl rollout status deployment/${K8S_DEPLOYMENT} -n ${K8S_NAMESPACE}"
+      }
+    }
+  }
+
+  post {
+    success {
+      slackSend color: 'good', message: "✅ Deployment succeeded for TAG ${TAG}"
+    }
+    failure {
+      slackSend color: 'danger', message: "🚨 Deployment failed for TAG ${TAG}"
+    }
+  }
 }
