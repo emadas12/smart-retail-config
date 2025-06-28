@@ -8,11 +8,14 @@ pipeline {
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
 
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        SLACK_CREDENTIAL_ID   = 'slack-webhook'
-        GITHUB_CREDENTIAL_ID  = 'github-push-token'
-        ARGOCD_CREDS_ID       = 'argocd-admin-password'
+        SLACK_CREDENTIAL_ID = 'slack-webhook'
+        GITHUB_CREDENTIAL_ID = 'github-push-token'
+        ARGOCD_CREDS_ID = 'argocd-admin-password'
 
-        ARGOCD_SERVER_ADDRESS = 'host.docker.internal:8080'  // חייב שיהיה פורט פורוורד פעיל!
+        // --- NEW: ArgoCD Server Address Variable ---
+        // Based on 'kubectl get svc -n argocd' output for 'argocd-server' service (80/TCP, 443/TCP)
+        // Using internal cluster DNS for argocd-server and port 443 for HTTPS/gRPC-web
+        ARGOCD_SERVER_ADDRESS = 'https://argocd-server.argocd.svc.cluster.local:443' // <--- **Updated to HTTPS on port 443**
     }
 
     options {
@@ -96,7 +99,7 @@ pipeline {
                                 git config user.name "Rani Saed (CI/CD)"
                                 git config user.email "rani.saed19@gmail.com"
                                 git add k8s/backend/deployment.yaml
-
+                                
                                 if ! git diff --cached --quiet; then
                                     git commit -m "🚀 Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
@@ -115,15 +118,14 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
                     script {
-                        // חובה שהפורט פורוורד ל־8080 יהיה פעיל ב־localhost
-                        sh '''
-                            argocd login localhost:8080 \
-                                --username admin \
-                                --password "$ARGO_PASS" \
-                                --grpc-web --insecure
-
-                            argocd app sync dr-backend-app --grpc-web
-                        '''
+                        echo "🚀 Deploying backend to DR via ArgoCD..."
+                        // Pass password securely via stdin using 'read -s' to avoid Groovy interpolation warning
+                        sh """
+                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --grpc-web --insecure <<EOF
+                            ${ARGO_PASS}
+                            EOF
+                        """
+                        sh "argocd app sync dr-backend-app --grpc-web"
                     }
                 }
             }
@@ -150,30 +152,30 @@ pipeline {
         success {
             echo "✅ Success"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh '''
+                sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR."}' $SLACK_WEBHOOK
-                '''
+                """
             }
         }
 
         aborted {
             echo "⚠️ Pipeline aborted"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh '''
+                sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "⚠️ *Backend* pipeline aborted — no backend changes."}' $SLACK_WEBHOOK
-                '''
+                """
             }
         }
 
         failure {
             echo "❌ Failure"
             withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
-                sh '''
+                sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
-                '''
+                """
             }
         }
     }
