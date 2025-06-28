@@ -1,0 +1,112 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = 'emadas/gogo-main-frontend'
+        TAG = "build-${env.BUILD_NUMBER}"
+        DEV_REPO_URL = 'https://github.com/emadas12/smart-retail-dev.git'
+        CONFIG_REPO_URL = 'https://github.com/emadas12/smart-retail-config.git'
+        DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+        GIT_CREDENTIAL_ID = 'github-push-token'
+        SLACK_WEBHOOK = credentials('slack-webhook')
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('📥 Clone Repos') {
+            steps {
+                dir('dev') {
+                    git url: "${DEV_REPO_URL}", branch: 'main'
+                }
+                dir('config') {
+                    git url: "${CONFIG_REPO_URL}", branch: 'main'
+                }
+            }
+        }
+
+        stage('🧹 Lint + ✅ Test') {
+            steps {
+                dir('dev/frontend') {
+                    sh '''
+                        npm install
+                        npx eslint src/
+                        npm test -- --watchAll=false
+                    '''
+                }
+            }
+        }
+
+        stage('🐳 Build & Push Image') {
+            steps {
+                dir('dev') {
+                    script {
+                        docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
+                            def image = docker.build("${IMAGE_NAME}:${TAG}", "-f frontend/Dockerfile frontend")
+                            image.push()
+                            image.push("latest")
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('✏️ Update K8s Deployment') {
+            steps {
+                dir('config') {
+                    sh """
+                        sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' k8s/frontend/deployment.yaml
+                        git config user.name "Jenkins CI"
+                        git config user.email "jenkins@example.com"
+                        git add k8s/frontend/deployment.yaml
+                        git commit -m "🔄 Frontend image updated to ${TAG}" || echo "No changes to commit"
+                        git remote set-url origin https://${GIT_CREDENTIAL_ID}@github.com/emadas12/smart-retail-config.git
+                        git push origin main || echo "Nothing to push"
+                    """
+                }
+            }
+        }
+
+        stage('🚀 Deploy to Kubernetes') {
+            steps {
+                dir('config') {
+                    sh 'kubectl apply -f k8s/frontend/'
+                }
+            }
+        }
+
+        stage('🔍 Health Check') {
+            steps {
+                sh '''
+                    sleep 10
+                    STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000)
+                    if [ "$STATUS" -ne 200 ]; then
+                      echo "❌ Health check failed (status: $STATUS)"
+                      exit 1
+                    fi
+                    echo "✅ Frontend is healthy"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            sh """
+                curl -X POST -H 'Content-type: application/json' \
+                --data '{"text": "✅ *Frontend deployed*: ${TAG}"}' \
+                ${SLACK_WEBHOOK}
+            """
+        }
+        failure {
+            sh """
+                curl -X POST -H 'Content-type: application/json' \
+                --data '{"text": "❌ *Frontend failed*: ${TAG}"}' \
+                ${SLACK_WEBHOOK}
+            """
+        }
+    }
+}

@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: emadas/backend:v1
+          image: emadas/backend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 5000

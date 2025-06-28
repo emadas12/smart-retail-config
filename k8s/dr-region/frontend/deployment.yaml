@@ -2,16 +2,21 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: frontend
-  namespace: default
+  namespace: dr-region
+  labels:
+    app: frontend
+    region: dr
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: frontend
+      region: dr
   template:
     metadata:
       labels:
         app: frontend
+        region: dr
     spec:
       containers:
         - name: frontend
@@ -20,4 +25,4 @@ spec:
             - containerPort: 80
           env:
             - name: VITE_API_URL
-              value: "http://backend:5000/api"
+              value: "http://backend:5000/api"  # הפנייה ל־backend בתוך אותו namespace
