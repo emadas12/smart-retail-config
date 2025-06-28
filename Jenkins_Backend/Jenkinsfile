@@ -18,20 +18,14 @@ pipeline {
 
     stages {
         stage('📥 Clone Repos') {
-    steps {
-        timeout(time: 5, unit: 'MINUTES') {
-            dir('dev') {
-                git url: "${DEV_REPO_URL}", branch: 'main'
+            steps {
+                dir('dev') {
+                    git url: "${DEV_REPO_URL}", branch: 'main'
+                }
+                dir('config') {
+                    git url: "${CONFIG_REPO_URL}", branch: 'main'
+                }
             }
-        }
-        timeout(time: 5, unit: 'MINUTES') {
-            dir('config') {
-                git url: "${CONFIG_REPO_URL}", branch: 'main'
-            }
-        }
-    }
-}
-
         }
 
         stage('🧹 Lint + ✅ Test') {
@@ -116,4 +110,4 @@ pipeline {
             """
         }
     }
-
+}
