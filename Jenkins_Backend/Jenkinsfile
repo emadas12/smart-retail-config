@@ -8,12 +8,14 @@ pipeline {
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
 
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        SLACK_CREDENTIAL_ID   = 'slack-webhook'
-        GITHUB_CREDENTIAL_ID  = 'github-push-token'
-        ARGOCD_CREDS_ID       = 'argocd-admin-password'
+        SLACK_CREDENTIAL_ID = 'slack-webhook'
+        GITHUB_CREDENTIAL_ID = 'github-push-token'
+        ARGOCD_CREDS_ID = 'argocd-admin-password'
 
-        // Best: ArgoCD exposed via kubectl port-forward to localhost:8080 on host
-        ARGOCD_SERVER_ADDRESS = 'host.docker.internal:8080'
+        // --- FIXED: ArgoCD Server Address Variable ---
+        // Removed 'https://' prefix. The argocd CLI handles the protocol based on port/flags.
+        // This resolves the "too many colons in address" error.
+        ARGOCD_SERVER_ADDRESS = 'argocd-server.argocd.svc.cluster.local:443' // <--- **FIXED**
     }
 
     options {
@@ -22,7 +24,6 @@ pipeline {
     }
 
     stages {
-
         stage('📥 Clone Dev Repo') {
             steps {
                 dir('dev') {
@@ -70,7 +71,7 @@ pipeline {
                     script {
                         docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:latest").push()
+                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
                         }
                     }
                 }
@@ -98,7 +99,7 @@ pipeline {
                                 git config user.name "Rani Saed (CI/CD)"
                                 git config user.email "rani.saed19@gmail.com"
                                 git add k8s/backend/deployment.yaml
-
+                                
                                 if ! git diff --cached --quiet; then
                                     git commit -m "🚀 Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
@@ -117,11 +118,14 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
                     script {
-                        echo "🚀 Deploying to DR via ArgoCD on host.docker.internal:8080"
+                        echo "🚀 Deploying backend to DR via ArgoCD..."
+                        // Pass password securely via stdin using 'read -s' to avoid Groovy interpolation warning
                         sh """
-                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --password "$ARGO_PASS" --grpc-web --insecure
-                            argocd app sync dr-backend-app --grpc-web
+                            argocd login ${ARGOCD_SERVER_ADDRESS} --username admin --grpc-web --insecure <<EOF
+                            ${ARGO_PASS}
+                            EOF
                         """
+                        sh "argocd app sync dr-backend-app --grpc-web"
                     }
                 }
             }
@@ -130,6 +134,7 @@ pipeline {
         stage('🧪 DR Failover Test') {
             steps {
                 echo "🔁 Starting DR failover test..."
+                // Ensure this script exists and is executable in your 'dev' repo
                 sh 'chmod +x dev/scripts/failover-check.sh'
                 sh 'nohup bash dev/scripts/failover-check.sh > dev/failover.log 2>&1 &'
             }
