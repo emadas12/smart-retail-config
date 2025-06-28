@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: dr-region
+  labels:
+    app: backend
+    region: dr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+      region: dr
+  template:
+    metadata:
+      labels:
+        app: backend
+        region: dr
+    spec:
+      containers:
+        - name: backend
+          image: emadas/backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://postgres:12345678@postgres.default.svc.cluster.local:5432/shop_inventory"
