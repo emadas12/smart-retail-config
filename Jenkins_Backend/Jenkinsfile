@@ -9,13 +9,12 @@ pipeline {
 
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
         SLACK_CREDENTIAL_ID = 'slack-webhook'
-        GITHUB_CREDENTIAL_ID = 'github-push-token'
-        ARGOCD_CREDS_ID = 'argocd-admin-password'
+        ARGO_PASS_CREDENTIAL_ID = 'argocd-admin-password'
     }
 
     options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 20, unit: 'MINUTES')
     }
 
     stages {
@@ -39,11 +38,15 @@ pipeline {
             steps {
                 dir('dev') {
                     script {
-                        def changed = sh(script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'", returnStatus: true) == 0
+                        def changed = sh(
+                            script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
+                            returnStatus: true
+                        ) == 0
+
                         if (!changed) {
                             echo "⚠️ No changes in backend code. Aborting..."
                             currentBuild.result = 'ABORTED'
-                            error("No backend changes.")
+                            error("No changes in backend/")
                         }
                     }
                 }
@@ -53,20 +56,23 @@ pipeline {
         stage('🐳 Build Docker Image') {
             steps {
                 dir('dev') {
-                    script {
-                        docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
-                    }
+                    echo "📦 Building image ${IMAGE_NAME}:${TAG}"
+                    docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
                 }
             }
         }
 
         stage('🚀 Push to Docker Hub') {
             steps {
-                withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKER_CREDENTIALS_ID}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
                     script {
-                        docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
+                        docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
                             docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+                            docker.image("${IMAGE_NAME}:latest").push()
                         }
                     }
                 }
@@ -77,9 +83,14 @@ pipeline {
             steps {
                 dir('config') {
                     script {
-                        def path = "k8s/backend/deployment.yaml"
-                        sh "sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' ${path}"
-                        sh "cat ${path}"
+                        def filePath = "k8s/backend/deployment.yaml"
+                        def newImage = "${IMAGE_NAME}:${TAG}"
+                        echo "🔧 Updating ${filePath} with new image: ${newImage}"
+
+                        sh """
+                            sed -i 's|image:.*|image: ${newImage}|' ${filePath}
+                        """
+                        sh "cat ${filePath}"
                     }
                 }
             }
@@ -88,19 +99,19 @@ pipeline {
         stage('📤 Commit & Push Changes') {
             steps {
                 dir('config') {
-                    withCredentials([string(credentialsId: GITHUB_CREDENTIAL_ID, variable: 'GIT_TOKEN')]) {
+                    withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
                         script {
                             sh """
-                                git config user.name "Rani Saed (CI/CD)"
                                 git config user.email "rani.saed19@gmail.com"
+                                git config user.name "Rani Saed (CI/CD)"
                                 git add k8s/backend/deployment.yaml
-                                
+
                                 if ! git diff --cached --quiet; then
                                     git commit -m "🚀 Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
                                     git push origin main
                                 else
-                                    echo "ℹ️ No changes to commit"
+                                    echo "No changes to commit"
                                 fi
                             """
                         }
@@ -109,13 +120,15 @@ pipeline {
             }
         }
 
-        stage('🌍 Deploy to DR Region') {
+        stage('🚀 Deploy to DR Region') {
             steps {
-                withCredentials([string(credentialsId: ARGOCD_CREDS_ID, variable: 'ARGO_PASS')]) {
+                withCredentials([string(credentialsId: "${ARGO_PASS_CREDENTIAL_ID}", variable: 'ARGO_PASS')]) {
                     script {
-                        echo "🚀 Deploying backend to DR via ArgoCD..."
-                        sh "argocd login localhost:8080 --username admin --password ${ARGO_PASS} --grpc-web --insecure"
-                        sh "argocd app sync dr-backend-app --grpc-web"
+                        echo "📡 Deploying backend to DR via ArgoCD"
+                        sh """
+                            argocd login host.docker.internal:8080 --username admin --password ${ARGO_PASS} --grpc-web --insecure
+                            argocd app sync dr-backend-app --grpc-web
+                        """
                     }
                 }
             }
@@ -123,7 +136,7 @@ pipeline {
 
         stage('🧪 DR Failover Test') {
             steps {
-                echo "🔁 Starting DR failover test..."
+                echo "🛠️ Running failover check..."
                 sh 'chmod +x dev/scripts/failover-check.sh'
                 sh 'nohup bash dev/scripts/failover-check.sh > dev/failover.log 2>&1 &'
             }
@@ -131,8 +144,8 @@ pipeline {
 
         stage('📄 DR Report') {
             steps {
-                echo "📝 Saving DR report..."
-                sh 'echo "✅ DR Success - $(date)" >> dev/failover.log'
+                echo "📊 Logging DR status..."
+                sh 'echo "✅ DR Pipeline Success - $(date)" >> dev/failover.log'
                 archiveArtifacts artifacts: 'dev/failover.log', fingerprint: true
             }
         }
@@ -140,8 +153,8 @@ pipeline {
 
     post {
         success {
-            echo "✅ Success"
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+            echo "✅ Backend CI/CD Pipeline completed successfully."
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR."}' $SLACK_WEBHOOK
@@ -150,18 +163,18 @@ pipeline {
         }
 
         aborted {
-            echo "⚠️ Pipeline aborted"
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+            echo "⏹️ Pipeline aborted (no backend changes)"
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no backend changes."}' $SLACK_WEBHOOK
+                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
                 """
             }
         }
 
         failure {
-            echo "❌ Failure"
-            withCredentials([string(credentialsId: SLACK_CREDENTIAL_ID, variable: 'SLACK_WEBHOOK')]) {
+            echo "❌ Pipeline failed"
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
