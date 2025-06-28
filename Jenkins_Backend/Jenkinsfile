@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         IMAGE_NAME = 'emadas/backend'
-        TAG = "build-${BUILD_NUMBER}"
+        TAG = "${env.BUILD_NUMBER}"
         DEV_REPO_URL = 'https://github.com/emadas12/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/emadas12/smart-retail-config.git'
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
