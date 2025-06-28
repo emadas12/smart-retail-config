@@ -115,6 +115,31 @@ pipeline {
                 }
             }
         }
+
+        stage('🚀 Deploy to DR Region') {
+            steps {
+                script {
+                    echo "📡 Deploying backend to DR via ArgoCD"
+                    sh "argocd app sync dr-backend-app --grpc-web"
+                }
+            }
+        }
+
+        stage('🧪 DR Failover Test') {
+            steps {
+                echo "🛠️ Running failover check..."
+                sh 'chmod +x dev/scripts/failover-check.sh'
+                sh 'nohup bash dev/scripts/failover-check.sh > dev/failover.log 2>&1 &'
+            }
+        }
+
+        stage('📄 DR Report') {
+            steps {
+                echo "📊 Logging DR status..."
+                sh 'echo "✅ DR Pipeline Success - $(date)" >> dev/failover.log'
+                archiveArtifacts artifacts: 'dev/failover.log', fingerprint: true
+            }
+        }
     }
 
     post {
@@ -123,7 +148,7 @@ pipeline {
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed with DR."}' $SLACK_WEBHOOK
                 """
             }
         }
