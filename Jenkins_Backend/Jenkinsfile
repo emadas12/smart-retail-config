@@ -42,9 +42,9 @@ pipeline {
                         ) == 0
 
                         if (!backendChanged) {
-                            echo "⚠️ No changes in backend code. Aborting..."
-                            currentBuild.result = 'ABORTED'
-                            error("No changes in backend/")
+                            echo "ℹ️ No changes in backend code. Skipping build..."
+                            currentBuild.result = 'SUCCESS' // כדי לא לקבל ABORTED
+                            return
                         }
                     }
                 }
@@ -173,10 +173,10 @@ pipeline {
         }
 
         aborted {
-            echo "⏹️ Pipeline aborted (no backend changes)"
+            echo "⏹️ Pipeline aborted (manual)"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh(
-                    script: 'curl -X POST -H "Content-type: application/json" --data \'{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}\' "$SLACK_WEBHOOK"',
+                    script: 'curl -X POST -H "Content-type: application/json" --data \'{"text": "⚠️ *Backend* pipeline was manually aborted."}\' "$SLACK_WEBHOOK"',
                     label: 'Notify Slack (Aborted)'
                 )
             }
