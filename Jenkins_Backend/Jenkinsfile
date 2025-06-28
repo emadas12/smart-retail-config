@@ -8,7 +8,6 @@ pipeline {
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
         SLACK_CREDENTIAL_ID = 'slack-webhook'
-        GITHUB_PUSH_TOKEN_ID = 'github-push-token'
     }
 
     options {
@@ -96,7 +95,7 @@ pipeline {
         stage('📤 Commit & Push Changes') {
             steps {
                 dir('config') {
-                    withCredentials([string(credentialsId: "${GITHUB_PUSH_TOKEN_ID}", variable: 'GIT_TOKEN')]) {
+                    withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
                         script {
                             sh """
                                 git config user.email "rani.saed19@gmail.com"
@@ -113,33 +112,6 @@ pipeline {
                             """
                         }
                     }
-                }
-            }
-        }
-
-        stage('✅ Health Check (Backend)') {
-            steps {
-                script {
-                    echo "🚀 Port-forward backend service and test health"
-
-                    sh '''
-                        kubectl port-forward svc/backend 5000:5000 -n default > pf.log 2>&1 &
-                        echo $! > pf.pid
-                        sleep 5
-
-                        for i in {1..5}; do
-                            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/health || true)
-                            if [ "$STATUS" = "200" ]; then
-                                echo "✅ Backend is healthy"
-                                break
-                            else
-                                echo "🔁 Attempt $i: Got HTTP $STATUS"
-                                sleep 2
-                            fi
-                        done
-
-                        kill $(cat pf.pid)
-                    '''
                 }
             }
         }
