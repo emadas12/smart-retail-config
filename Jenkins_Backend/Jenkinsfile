@@ -183,18 +183,21 @@ pipeline {
             steps {
                 script {
                     echo "Starting local Docker Compose services for backend and db sync..."
-                    // Navigate to the directory containing your main docker-compose.yml
-                    // and bring up only the backend service and its dependencies (like db)
-                    // Ensure the backend service is configured with extra_hosts and seed.py
-                    sh """
-                        cd /Users/ranisaed/devops/DevOps-project/Zonata/Naruto/smart-retail-dev
-                        docker-compose up -d --build backend # Bring up backend, rebuilding it to ensure seed.py is latest
-                        # Wait a bit for the DB to be ready if it was just started or restarted
-                        sleep 10
-                        echo "Executing seed script to synchronize local DB with Kubernetes data..."
-                        docker exec -it gogo-backend bash -c "python /app/seed.py"
-                        echo "Local DB synchronization attempt complete."
-                    """
+                    // Navigate to the 'dev' directory within the Jenkins workspace.
+                    // This 'dev' directory contains the docker-compose.yml for your local services.
+                    dir('dev') {
+                        sh """
+                            docker-compose up -d --build backend # Bring up backend, rebuilding it to ensure seed.py is latest
+                            # Wait a bit for the DB to be ready if it was just started or restarted
+                            sleep 10
+                            echo "Executing seed script to synchronize local DB with Kubernetes data..."
+                            # docker exec targets the container on the host's Docker daemon, not inside Jenkins.
+                            # The 'gogo-backend' container runs on the host, which Jenkins can interact with
+                            # via the mounted /var/run/docker.sock.
+                            docker exec -it gogo-backend bash -c "python /app/seed.py"
+                            echo "Local DB synchronization attempt complete."
+                        """
+                    }
                 }
             }
         }
@@ -204,7 +207,7 @@ pipeline {
     post {
         success {
             echo "✅ Backend image pushed and deployment updated."
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIALS_ID}", variable: 'SLACK_WEBHOOK')]) { // Changed SLACK_WEBHOOK to SLACK_CREDENTIAL_ID
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & local DB synchronized!"}' $SLACK_WEBHOOK
@@ -214,7 +217,7 @@ pipeline {
 
         aborted {
             echo "⏹️ Pipeline aborted (no backend changes)"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIALS_ID}", variable: 'SLACK_WEBHOOK')]) { // Changed SLACK_WEBHOOK to SLACK_CREDENTIAL_ID
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
@@ -224,7 +227,7 @@ pipeline {
 
         failure {
             echo "❌ Pipeline failed"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIALS_ID}", variable: 'SLACK_WEBHOOK')]) { // Changed SLACK_WEBHOOK to SLACK_CREDENTIAL_ID
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
