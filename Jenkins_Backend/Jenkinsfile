@@ -179,19 +179,38 @@ pipeline {
             }
         }
 
-        stage('🔄 Synchronize Local Development DB') { // NEW STAGE ADDED HERE
+        stage('🔄 Synchronize Local Development DB') {
             steps {
                 script {
                     echo "Starting local Docker Compose services for backend and db sync..."
                     // Navigate to the 'dev' directory within the Jenkins workspace.
                     // This 'dev' directory contains the docker-compose.yml for your local services.
                     dir('dev') {
+                        // --- Install Docker Compose CLI (more universal method) ---
+                        // Check if docker-compose is already installed
+                        def compose_exists = sh(script: "command -v docker-compose >/dev/null && echo 'true' || echo 'false'", returnStdout: true).trim()
+                        if (compose_exists == 'false') {
+                            echo "Docker Compose CLI not found. Installing..."
+                            sh """
+                                # Use sudo if necessary, depending on Jenkins agent's permissions
+                                sudo curl -L "https://github.com/docker/compose/releases/download/v2.24.5/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                                sudo chmod +x /usr/local/bin/docker-compose
+                                echo "Docker Compose CLI installed."
+                            """
+                        } else {
+                            echo "Docker Compose CLI already installed."
+                        }
+                        // --- End Docker Compose CLI Installation ---
+
                         sh """
-                            docker-compose up -d --build backend # Bring up backend, rebuilding it to ensure seed.py is latest
+                            # Ensure the Docker Compose services are up and running, rebuilding 'backend'
+                            docker-compose up -d --build backend
+                            
                             # Wait a bit for the DB to be ready if it was just started or restarted
                             sleep 10
+                            
                             echo "Executing seed script to synchronize local DB with Kubernetes data..."
-                            # docker exec targets the container on the host's Docker daemon, not inside Jenkins.
+                            # docker exec targets the container on the host's Docker daemon.
                             # The 'gogo-backend' container runs on the host, which Jenkins can interact with
                             # via the mounted /var/run/docker.sock.
                             docker exec -it gogo-backend bash -c "python /app/seed.py"
