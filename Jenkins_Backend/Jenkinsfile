@@ -154,20 +154,22 @@ pipeline {
                         def healthy = false
                         for (int i = 1; i <= maxAttempts; i++) {
                             echo "Attempt ${i}/${maxAttempts}: Curling http://gogo-backend:5000/health..."
-                            // Execute curl and capture both stdout and exit status
-                            def curlOutput = sh(
-                                script: "curl -s http://gogo-backend:5000/health",
-                                returnStdout: true, // Capture output to check for "healthy" status
-                                returnStatus: true  // Capture exit status (0 for success)
+                            // Execute curl and grep for the healthy status string
+                            // -s: silent mode for curl
+                            // -q: quiet mode for grep (only sets exit status)
+                            // returnStatus: true will capture the exit status of the piped command (grep's status)
+                            def healthCheckStatus = sh(
+                                script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"'",
+                                returnStatus: true
                             )
 
-                            // Check if curl command succeeded and its output contains the "healthy" status
-                            if (curlOutput.status == 0 && curlOutput.stdout.contains('"status":"healthy"')) {
+                            // If grep found the string, its exit status will be 0
+                            if (healthCheckStatus == 0) {
                                 echo "✅ Backend is healthy on attempt ${i}!"
                                 healthy = true
                                 break // Health check passed, exit the loop
                             } else {
-                                echo "❌ Backend not yet healthy. Status: ${curlOutput.status}, Output: ${curlOutput.stdout.trim()}"
+                                echo "❌ Backend not yet healthy."
                                 if (i < maxAttempts) {
                                     sleep waitTime // Wait before the next attempt
                                 }
