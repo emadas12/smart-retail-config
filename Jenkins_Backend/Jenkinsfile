@@ -1,215 +1,206 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        IMAGE_NAME = 'rani19/backend'
-        TAG = "build-${env.BUILD_NUMBER}"
-        DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
-        CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
-        DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        SLACK_CREDENTIAL_ID = 'slack-webhook'
+  environment {
+    IMAGE_NAME = 'rani19/backend'
+    TAG = "build-${env.BUILD_NUMBER}"
+    DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+    SLACK_CREDENTIAL_ID = 'slack-webhook'
+  }
+
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '5'))
+    timeout(time: 20, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('📥 Clone Dev Repo') {
+      steps {
+        dir('dev') {
+          git url: "${DEV_REPO_URL}", branch: 'main'
+        }
+      }
     }
 
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '5'))
-        timeout(time: 20, unit: 'MINUTES')
+    stage('📁 Clone Config Repo') {
+      steps {
+        dir('config') {
+          git url: "${CONFIG_REPO_URL}", branch: 'main'
+        }
+      }
     }
 
-    stages {
-        stage('📥 Clone Dev Repo') {
-            steps {
-                dir('dev') {
-                    git url: "${DEV_REPO_URL}", branch: 'main'
-                }
+    stage('🕵️ Check Backend Changes') {
+      steps {
+        dir('dev') {
+          script {
+            def backendChanged = sh(
+              script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
+              returnStatus: true
+            ) == 0
+
+            if (!backendChanged) {
+              echo "⚠️ No changes in backend code. Aborting..."
+              currentBuild.result = 'ABORTED'
+              error("No changes in backend/")
             }
+          }
         }
-
-        stage('📁 Clone Config Repo') {
-            steps {
-                dir('config') {
-                    git url: "${CONFIG_REPO_URL}", branch: 'main'
-                }
-            }
-        }
-
-        stage('🕵️ Check Backend Changes') {
-            steps {
-                dir('dev') {
-                    script {
-                        def backendChanged = sh(
-                            script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
-                            returnStatus: true
-                        ) == 0
-
-                        if (!backendChanged) {
-                            echo "⚠️ No changes in backend code. Aborting..."
-                            currentBuild.result = 'ABORTED'
-                            error("No changes in backend/")
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('🐳 Build Docker Image') {
-            steps {
-                dir('dev') {
-                    script {
-                        echo "📦 Building image ${IMAGE_NAME}:${TAG}"
-                        docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
-                    }
-                }
-            }
-        }
-
-        stage('🚀 Push to Docker Hub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    script {
-                        docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
-                            docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('✏️ Update Deployment YAML') {
-            steps {
-                dir('config') {
-                    script {
-                        def filePath = "k8s/backend/deployment.yaml"
-                        def newImage = "${IMAGE_NAME}:${TAG}"
-                        echo "🔧 Updating ${filePath} with new image: ${newImage}"
-                        sh "sed -i 's|image:.*|image: ${newImage}|' ${filePath}"
-                        sh "cat ${filePath}"
-                    }
-                }
-            }
-        }
-
-        stage('📤 Commit & Push Changes') {
-            steps {
-                dir('config') {
-                    withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
-                        script {
-                            sh """
-                                git config user.email "rani.saed19@gmail.com"
-                                git config user.name "Rani Saed (CI/CD)"
-                                git add k8s/backend/deployment.yaml
-                                if ! git diff --cached --quiet; then
-                                    git commit -m "🚀 Update backend image to ${TAG}"
-                                    git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
-                                    git push origin main
-                                else
-                                    echo "No changes to commit"
-                                fi
-                            """
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('❤️ Health Check') {
-            steps {
-                script {
-                    echo "🔍 Checking backend health..."
-                    def maxAttempts = 15
-                    def waitTime = 10
-                    def healthy = false
-
-                    for (int i = 1; i <= maxAttempts; i++) {
-                        echo "Attempt ${i}/${maxAttempts}: Curling http://gogo-backend:5000/health..."
-                        def healthCheckStatus = sh(
-                            script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"'",
-                            returnStatus: true
-                        )
-                        if (healthCheckStatus == 0) {
-                            echo "✅ Backend is healthy on attempt ${i}!"
-                            healthy = true
-                            break
-                        } else {
-                            echo "❌ Backend not yet healthy."
-                            if (i < maxAttempts) {
-                                sleep waitTime
-                            }
-                        }
-                    }
-
-                    if (!healthy) {
-                        error "❌ Backend health check failed after ${maxAttempts} attempts!"
-                    }
-                }
-            }
-        }
-
-        stage('🛡️ DR Failover & Sync') {
-            steps {
-                script {
-                    echo "🔍 Checking if Main Frontend (3000) is UP..."
-                    def frontendStatus = sh(
-                        script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 || echo 000",
-                        returnStdout: true
-                    ).trim()
-
-                    if (frontendStatus != "200") {
-                        echo "🚨 Main Frontend is DOWN (HTTP ${frontendStatus}). Launching DR Frontend (3002)..."
-                        sh "docker start gogo-dr-frontend || true"
-                    } else {
-                        echo "✅ Main Frontend is UP (HTTP ${frontendStatus})"
-                    }
-
-                    echo "🔍 Checking if Main Backend (5001) is UP..."
-                    def backendStatus = sh(
-                        script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5001/health || echo 000",
-                        returnStdout: true
-                    ).trim()
-
-                    if (backendStatus != "200") {
-                        echo "🚨 Main Backend is DOWN (HTTP ${backendStatus}). Launching DR Backend (5002)..."
-                        sh "docker start gogo-dr-backend || true"
-
-                        echo "🌱 Running seed.py inside DR Backend container..."
-                        sh 'docker exec gogo-backend python /app/seed.py'
-                    } else {
-                        echo "✅ Main Backend is UP (HTTP ${backendStatus})"
-                    }
-                }
-            }
-        }
+      }
     }
 
-    post {
-        success {
-            echo "✅ Backend image pushed and deployment updated."
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
-                """
-            }
+    stage('🐳 Build Docker Image') {
+      steps {
+        dir('dev') {
+          script {
+            echo "📦 Building image ${IMAGE_NAME}:${TAG}"
+            docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
+          }
         }
-
-        aborted {
-            echo "⏹️ Pipeline aborted (no backend changes)"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
-                """
-            }
-        }
-
-        failure {
-            echo "❌ Pipeline failed"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
-                """
-            }
-        }
+      }
     }
+
+    stage('🚀 Push to Docker Hub') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          script {
+            docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
+              docker.image("${IMAGE_NAME}:${TAG}").push()
+              docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+            }
+          }
+        }
+      }
+    }
+
+    stage('✏️ Update Deployment YAML') {
+      steps {
+        dir('config') {
+          script {
+            def filePath = "k8s/backend/deployment.yaml"
+            def newImage = "${IMAGE_NAME}:${TAG}"
+            echo "🔧 Updating ${filePath} with new image: ${newImage}"
+            sh "sed -i 's|image:.*|image: ${newImage}|' ${filePath}"
+            sh "cat ${filePath}"
+          }
+        }
+      }
+    }
+
+    stage('📤 Commit & Push Changes') {
+      steps {
+        dir('config') {
+          withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
+            sh """
+              git config user.email "rani.saed19@gmail.com"
+              git config user.name "Rani Saed (CI/CD)"
+              git add k8s/backend/deployment.yaml
+              if ! git diff --cached --quiet; then
+                git commit -m "🚀 Update backend image to ${TAG}"
+                git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
+                git push origin main
+              else
+                echo "No changes to commit"
+              fi
+            """
+          }
+        }
+      }
+    }
+
+    stage('❤️ Health Check (Main)') {
+      steps {
+        script {
+          def maxAttempts = 10
+          def waitTime = 5
+          def healthy = false
+
+          for (int i = 1; i <= maxAttempts; i++) {
+            echo "🧪 Attempt ${i}: Checking http://localhost:5001/health..."
+            def result = sh(script: "curl -s http://localhost:5001/health | grep -q '\"status\":\"healthy\"'", returnStatus: true)
+            if (result == 0) {
+              echo "✅ Main Backend is healthy."
+              healthy = true
+              break
+            } else {
+              echo "❌ Not healthy yet..."
+              sleep(waitTime)
+            }
+          }
+
+          if (!healthy) {
+            error "🚫 Backend failed health check after ${maxAttempts} attempts."
+          }
+        }
+      }
+    }
+
+    stage('🛡️ DR Failover & Sync') {
+      steps {
+        script {
+          echo "🔍 Checking if Main Frontend (3000) is UP..."
+          def frontendUp = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 || echo 000", returnStdout: true).trim()
+
+          if (frontendUp != "200") {
+            echo "🚨 Main Frontend DOWN. Launching DR Frontend on port 3002..."
+            sh "docker start gogo-dr-frontend || true"
+          } else {
+            echo "✅ Main Frontend is UP"
+          }
+
+          echo "🔍 Checking if Main Backend (5001) is UP..."
+          def backendUp = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5001/health || echo 000", returnStdout: true).trim()
+
+          if (backendUp != "200") {
+            echo "🚨 Main Backend DOWN. Launching DR Backend..."
+            sh "docker start gogo-dr-backend || true"
+
+            echo "🌱 Running seed.py inside DR Backend..."
+            def seedStatus = sh(script: "docker exec gogo-dr-backend python /app/seed.py", returnStatus: true)
+            if (seedStatus != 0) {
+              echo "⚠️ Failed to run seed.py. You may want to verify manually."
+            } else {
+              echo "✅ seed.py executed successfully."
+            }
+          } else {
+            echo "✅ Main Backend is UP"
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Build + Deploy successful."
+      withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+        sh """
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text": "✅ *Backend* CI/CD successful — build *${TAG}* deployed and verified."}' $SLACK_WEBHOOK
+        """
+      }
+    }
+
+    aborted {
+      echo "🟡 Build aborted — No backend changes"
+      withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+        sh """
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text": "⚠️ *Backend* pipeline aborted — no changes to deploy."}' $SLACK_WEBHOOK
+        """
+      }
+    }
+
+    failure {
+      echo "❌ Build failed"
+      withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+        sh """
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text": "❌ *Backend* pipeline failed! Investigate Jenkins logs."}' $SLACK_WEBHOOK
+        """
+      }
+    }
+  }
 }
