@@ -27,12 +27,6 @@ pipeline {
         HEALTH_CHECK_TIMEOUT_SECONDS = 60
     }
 
-    options {
-        timestamps()
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
-    }
-
     stages {
         stage('Checkout Source') {
             steps {
