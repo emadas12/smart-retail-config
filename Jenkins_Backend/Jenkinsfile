@@ -1,44 +1,62 @@
+// Jenkinsfile - Backend CI/CD with Health Check and Minimal DR Failover
+
 pipeline {
-    agent any // Defines where the pipeline will run (any available agent)
+    agent any // Executes on any available Jenkins agent
 
     environment {
-        // Docker image name for your backend service
+        // --- Docker Configuration ---
         IMAGE_NAME = 'rani19/backend'
-        // Tag for the Docker image, incorporating the Jenkins build number for uniqueness
         TAG = "build-${env.BUILD_NUMBER}"
-        // URL for your development repository (backend code)
+
+        // --- Repository URLs ---
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
-        // URL for your configuration repository (Kubernetes manifests, etc.)
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
-        // Jenkins credential ID for Docker Hub login (Username with Password)
+
+        // --- Jenkins Credential IDs ---
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        // Jenkins credential ID for Slack webhook (Secret Text)
         SLACK_CREDENTIAL_ID = 'slack-webhook'
+        GITHUB_PUSH_TOKEN_ID = 'github-push-token' // Ensure this matches your credential ID
+
+        // --- Health Check & DR Configuration (Based on your docker ps) ---
+        MAIN_BACKEND_HEALTH_URL = 'http://localhost:5001/health' // gogo-backend
+        DR_BACKEND_HEALTH_URL = 'http://localhost:5002/health'   // gogo-dr-backend
+        MAIN_FRONTEND_HEALTH_URL = 'http://localhost:3000'       // gogo-main-frontend
+        DR_FRONTEND_HEALTH_URL = 'http://localhost:3002'         // gogo-dr-frontend
+
+        // Docker container names for commands like `docker start` and `docker exec`
+        MAIN_BACKEND_CONTAINER_NAME = 'gogo-backend'
+        DR_BACKEND_CONTAINER_NAME = 'gogo-dr-backend'
+        MAIN_FRONTEND_CONTAINER_NAME = 'gogo-main-frontend'
+        DR_FRONTEND_CONTAINER_NAME = 'gogo-dr-frontend'
+
+        // Health check parameters
+        HEALTH_CHECK_MAX_ATTEMPTS = 15
+        HEALTH_CHECK_WAIT_TIME_SECONDS = 10
+        // Total timeout for health check loop (in seconds)
+        HEALTH_CHECK_TOTAL_TIMEOUT_SECONDS = HEALTH_CHECK_MAX_ATTEMPTS * HEALTH_CHECK_WAIT_TIME_SECONDS
+
+        // Slack channel for notifications
+        SLACK_CHANNEL = "#devops-alerts" // Customize
     }
 
     options {
         // Keep only the last 5 successful builds and their logs
         buildDiscarder(logRotator(numToKeepStr: '5'))
         // Set a global timeout for the entire pipeline
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES') // Increased for DR stage
+        disableConcurrentBuilds() // Prevent simultaneous runs
+        timestamps() // Add timestamps to console output
+        ansiColor('xterm') // For colored output (requires AnsiColor plugin)
     }
 
     stages {
-        stage('📥 Clone Dev Repo') {
+        stage('📥 Clone Repositories') {
             steps {
-                // Clone the development repository into a 'dev' subdirectory in the workspace
-                dir('dev') {
-                    git url: "${DEV_REPO_URL}", branch: 'main'
-                }
-            }
-        }
-
-        stage('📁 Clone Config Repo') {
-            steps {
-                // Clone the configuration repository into a 'config' subdirectory in the workspace
-                dir('config') {
-                    git url: "${CONFIG_REPO_URL}", branch: 'main'
-                }
+                cleanWs(deleteDirs: true) // Clean workspace first
+                echo "Cloning development repository: ${DEV_REPO_URL}"
+                dir('dev') { git url: "${DEV_REPO_URL}", branch: 'main' }
+                echo "Cloning configuration repository: ${CONFIG_REPO_URL}"
+                dir('config') { git url: "${CONFIG_REPO_URL}", branch: 'main' }
             }
         }
 
@@ -46,18 +64,18 @@ pipeline {
             steps {
                 dir('dev') {
                     script {
-                        // Check if there are any changes in the 'backend/' directory since the last commit
-                        // git diff --name-only HEAD~1 HEAD gets files changed in the last commit
-                        // grep -q checks silently if 'backend/' path is present
+                        // Check for changes in the 'backend/' directory since the last commit
                         def backendChanged = sh(
-                            script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
-                            returnStatus: true // Return 0 for success (found changes), 1 for failure (no changes)
+                            script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/' || true",
+                            returnStatus: true
                         ) == 0
 
                         if (!backendChanged) {
                             echo "⚠️ No changes in backend code. Aborting..."
-                            currentBuild.result = 'ABORTED' // Set build status to ABORTED
-                            error("No changes in backend/") // Terminate pipeline with an error message
+                            currentBuild.result = 'ABORTED'
+                            error("No changes in backend/")
+                        } else {
+                            echo "✅ Changes detected in 'backend/'. Proceeding."
                         }
                     }
                 }
@@ -69,8 +87,6 @@ pipeline {
                 dir('dev') {
                     script {
                         echo "📦 Building image ${IMAGE_NAME}:${TAG}"
-                        // Build the Docker image from the backend/Dockerfile
-                        // The build context is 'backend' relative to the 'dev' directory
                         docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
                     }
                 }
@@ -79,16 +95,12 @@ pipeline {
 
         stage('🚀 Push to Docker Hub') {
             steps {
-                // Use Docker Hub credentials securely
                 withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    script {
-                        // Authenticate with Docker Hub registry
-                        docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
-                            // Push the image with the unique build tag
-                            docker.image("${IMAGE_NAME}:${TAG}").push()
-                            // Also push the same image with the 'latest' tag
-                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
-                        }
+                    docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
+                        docker.image("${IMAGE_NAME}:${TAG}").push()
+                        echo "Pushed ${IMAGE_NAME}:${TAG}"
+                        docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+                        echo "Pushed ${IMAGE_NAME}:latest"
                     }
                 }
             }
@@ -98,18 +110,12 @@ pipeline {
             steps {
                 dir('config') {
                     script {
-                        def filePath = "k8s/backend/deployment.yaml" // Path to the Kubernetes deployment YAML
-                        def newImage = "${IMAGE_NAME}:${TAG}"       // The new image tag to update
+                        def filePath = "k8s/backend/deployment.yaml"
+                        def newImage = "${IMAGE_NAME}:${TAG}"
                         echo "🔧 Updating ${filePath} with new image: ${newImage}"
-
-                        // Use 'sed' to replace the image tag in the deployment YAML
-                        // Note: 'sed -i' behaves differently on macOS (BSD sed) vs. Linux (GNU sed).
-                        // For portability, consider 'sed -i.bak' or platform-specific logic.
-                        // Assuming GNU sed compatibility or a controlled environment.
-                        sh """
-                            sed -i 's|image:.*|image: ${newImage}|' ${filePath}
-                        """
-                        sh "cat ${filePath}" // Print the updated file content for verification
+                        // Using Perl for cross-platform 'sed -i' behavior
+                        sh "perl -pi -e 's|image:.*|image: ${newImage}|g' ${filePath}"
+                        sh "cat ${filePath}" // Print for verification
                     }
                 }
             }
@@ -118,104 +124,164 @@ pipeline {
         stage('📤 Commit & Push Changes') {
             steps {
                 dir('config') {
-                    // Use GitHub personal access token for pushing changes
-                    withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
+                    withCredentials([string(credentialsId: "${GITHUB_PUSH_TOKEN_ID}", variable: 'GIT_TOKEN')]) {
                         script {
-                            sh """
-                                git config user.email "rani.saed19@gmail.com"
-                                git config user.name "Rani Saed (CI/CD)"
-                                git add k8s/backend/deployment.yaml # Stage the updated deployment YAML
+                            sh "git config user.email 'rani.saed19@gmail.com'"
+                            sh "git config user.name 'Rani Saed (CI/CD)'"
+                            sh "git add k8s/backend/deployment.yaml"
 
-                                # Check if there are actual changes staged before committing
-                                if ! git diff --cached --quiet; then
-                                    git commit -m "🚀 Update backend image to ${TAG}" # Commit with a descriptive message
-                                    # Set the remote URL with the token for authentication
-                                    git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
-                                    git push origin main # Push changes to the main branch
-                                else
-                                    echo "No changes to commit"
-                                fi
-                            """
+                            // Check for actual changes before committing
+                            if (sh(script: "git diff --cached --quiet || true", returnStatus: true) == 1) {
+                                sh "git commit -m '🚀 Update backend image to ${TAG}'"
+                                sh "git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git"
+                                sh "git push origin main"
+                                echo "✅ Configuration changes committed and pushed."
+                            } else {
+                                echo "No changes to commit in config repository."
+                            }
                         }
                     }
                 }
             }
         }
 
-        stage('❤️ Health Check') {
+        stage('❤️ Health Check & DR Failover') {
             steps {
                 script {
-                    echo "🔍 Checking backend health..."
-                    def maxAttempts = 15 // Max number of attempts to check health
-                    def waitTime = 10 // Seconds to wait between attempts
-                    def totalTimeout = maxAttempts * waitTime // Total timeout for the health check stage
-
-                    timeout(time: totalTimeout, unit: 'SECONDS') { // Global timeout for this specific stage
+                    // Reusable health check function
+                    def performHealthCheck = { serviceName, url, expectedStatusString = null ->
+                        echo "🔎 Checking ${serviceName} health at ${url}..."
                         def healthy = false
-                        for (int i = 1; i <= maxAttempts; i++) {
-                            echo "Attempt ${i}/${maxAttempts}: Curling http://gogo-backend:5000/health..."
-                            // Execute curl and grep for the healthy status string
-                            // -s: silent mode for curl
-                            // -q: quiet mode for grep (only sets exit status)
-                            // returnStatus: true will capture the exit status of the piped command (grep's status)
-                            def healthCheckStatus = sh(
-                                script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"'",
-                                returnStatus: true
-                            )
+                        def startTime = System.currentTimeMillis()
+                        def currentAttempts = 0
 
-                            // If grep found the string, its exit status will be 0
-                            if (healthCheckStatus == 0) {
-                                echo "✅ Backend is healthy on attempt ${i}!"
-                                healthy = true
-                                break // Health check passed, exit the loop
-                            } else {
-                                echo "❌ Backend not yet healthy."
-                                if (i < maxAttempts) {
-                                    sleep waitTime // Wait before the next attempt
+                        while (currentAttempts < env.HEALTH_CHECK_MAX_ATTEMPTS as int && !healthy && System.currentTimeMillis() - startTime < (env.HEALTH_CHECK_TOTAL_TIMEOUT_SECONDS as int * 1000) ) {
+                            currentAttempts++
+                            echo "Attempt ${currentAttempts}/${env.HEALTH_CHECK_MAX_ATTEMPTS}: Curling ${url}..."
+
+                            def curlOutput = sh(
+                                script: "curl -s --max-time 5 ${url} || true", // `|| true` prevents curl failure from stopping sh step
+                                returnStdout: true
+                            ).trim()
+
+                            def httpStatusCode = sh(
+                                script: "curl -s -o /dev/null -w '%{http_code}' --max-time 5 ${url} || echo 000",
+                                returnStdout: true
+                            ).trim()
+
+                            if (httpStatusCode == '200') {
+                                if (expectedStatusString) {
+                                    // For backend: check for specific status string
+                                    if (curlOutput.contains(expectedStatusString)) {
+                                        echo "✅ ${serviceName} is healthy (HTTP 200, status: '${expectedStatusString}')."
+                                        healthy = true
+                                    } else {
+                                        echo "❌ ${serviceName} is not returning expected status. Response snippet: '${curlOutput.take(50)}...'. Retrying in ${env.HEALTH_CHECK_WAIT_TIME_SECONDS}s..."
+                                    }
+                                } else {
+                                    // For frontend: only HTTP 200 is sufficient
+                                    echo "✅ ${serviceName} is healthy (HTTP 200)."
+                                    healthy = true
                                 }
+                            } else {
+                                echo "❌ ${serviceName} not yet healthy (HTTP ${httpStatusCode}). Retrying in ${env.HEALTH_CHECK_WAIT_TIME_SECONDS}s..."
+                            }
+
+                            if (!healthy && currentAttempts < env.HEALTH_CHECK_MAX_ATTEMPTS as int) {
+                                sleep env.HEALTH_CHECK_WAIT_TIME_SECONDS as int
                             }
                         }
+                        return healthy // Return boolean: true if healthy, false otherwise
+                    }
 
-                        if (!healthy) {
-                            // If loop finishes without the service becoming healthy, fail the pipeline
-                            error "❌ Backend health check failed after ${maxAttempts} attempts and ${totalTimeout} seconds!"
+                    // Store primary service health status
+                    env.mainBackendUp = performHealthCheck("Main Backend", MAIN_BACKEND_HEALTH_URL, "\"status\":\"healthy\"").toString()
+                    env.mainFrontendUp = performHealthCheck("Main Frontend", MAIN_FRONTEND_HEALTH_URL).toString() // No specific status string for frontend, just HTTP 200
+
+                    // --- DR Failover Logic ---
+                    if (env.mainBackendUp == 'false' || env.mainFrontendUp == 'false') {
+                        echo "🚨 Primary services are DOWN (Backend: ${env.mainBackendUp}, Frontend: ${env.mainFrontendUp}). Activating DR."
+                        currentBuild.result = 'UNSTABLE' // Mark build as unstable if primary is down
+
+                        // 1. Start DR containers if they are not running
+                        echo "Starting DR Backend container: ${DR_BACKEND_CONTAINER_NAME}..."
+                        sh "docker start ${DR_BACKEND_CONTAINER_NAME} || true"
+                        echo "Starting DR Frontend container: ${DR_FRONTEND_CONTAINER_NAME}..."
+                        sh "docker start ${DR_FRONTEND_CONTAINER_NAME} || true"
+
+                        // 2. Verify DR Backend health
+                        def drBackendHealthy = performHealthCheck("DR Backend", DR_BACKEND_HEALTH_URL, "\"status\":\"healthy\"")
+                        if (!drBackendHealthy) {
+                            error "Critical: DR Backend failed to become healthy after primary failure! Aborting failover."
                         }
+                        echo "✅ DR Backend is confirmed healthy."
+
+                        // 3. Execute seed command on DR Backend
+                        echo "Executing data seeding on DR Backend (${DR_BACKEND_CONTAINER_NAME})..."
+                        sh "docker exec -i ${DR_BACKEND_CONTAINER_NAME} bash -c 'python /app/seed.py'"
+                        echo "Data seeding on DR Backend completed."
+
+                        // 4. Verify DR Frontend health
+                        def drFrontendHealthy = performHealthCheck("DR Frontend", DR_FRONTEND_HEALTH_URL)
+                        if (!drFrontendHealthy) {
+                            error "Critical: DR Frontend failed to become healthy after primary failure! Aborting failover."
+                        }
+                        echo "✅ DR Frontend is confirmed healthy."
+
+                        // 5. Notify Slack about DR activation
+                        slackSend(
+                            channel: SLACK_CHANNEL,
+                            color: 'danger',
+                            message: "🚨 *Disaster Recovery Activated!* Primary services down. DR services (Backend: ${DR_BACKEND_HEALTH_URL}, Frontend: ${DR_FRONTEND_HEALTH_URL}) are active. Backend seeded.\n*Jenkins Build*: ${env.BUILD_URL}"
+                        )
+                        echo "⚠️ Failover complete. Manual intervention may be needed to re-route traffic."
+                    } else {
+                        echo "✅ Primary services are healthy. No DR activation needed."
                     }
                 }
             }
         }
     }
 
-    // Post-build actions based on pipeline result
     post {
+        always {
+            echo "--- 🧹 Cleaning up workspace ---"
+            cleanWs(deleteDirs: true)
+        }
+
         success {
-            echo "✅ Backend image pushed and deployment updated."
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
-                """
+            script {
+                // Check if DR was activated during this run based on environment flags
+                if (env.mainBackendUp == 'false' || env.mainFrontendUp == 'false') {
+                    echo "✅ Pipeline completed successfully, with DR activated."
+                    // Specific DR success message was sent in the 'Health Check & DR Failover' stage.
+                } else {
+                    echo "✅ Backend image pushed and deployment updated successfully."
+                    slackSend(
+                        channel: SLACK_CHANNEL,
+                        color: 'good',
+                        message: "✅ *Backend CI/CD Success*: Image *${TAG}* deployed & healthy!\n*Jenkins Build*: ${env.BUILD_URL}"
+                    )
+                }
             }
         }
 
         aborted {
-            echo "⏹️ Pipeline aborted (no backend changes)"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
-                """
-            }
+            echo "⏹️ Pipeline aborted (no backend changes)."
+            slackSend(
+                channel: SLACK_CHANNEL,
+                color: 'warning',
+                message: "⚠️ *Backend CI/CD Aborted*: No changes detected.\n*Jenkins Build*: ${env.BUILD_URL}"
+            )
         }
 
         failure {
-            echo "❌ Pipeline failed"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
-                """
-            }
+            echo "❌ Pipeline failed. Check Jenkins logs for details."
+            slackSend(
+                channel: SLACK_CHANNEL,
+                color: 'danger',
+                message: "❌ *Backend CI/CD FAILED*: Pipeline for *${env.JOB_NAME} #${env.BUILD_NUMBER}* failed!\n*Jenkins Build*: ${env.BUILD_URL}"
+            )
         }
     }
 }
