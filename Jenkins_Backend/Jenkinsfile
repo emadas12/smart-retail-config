@@ -121,7 +121,7 @@ pipeline {
                 script {
                     echo "🔍 Checking backend health..."
                     def healthStatus = sh(
-                        script: "curl -s http://gogo-backend:5000/health | grep '\"status\":\"healthy\"'",
+                        script: "curl -s http://localhost:5001/health | grep '\"status\":\"healthy\"'",
                         returnStatus: true
                     )
 
