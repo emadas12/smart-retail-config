@@ -1,24 +1,32 @@
 pipeline {
-    agent any
+    agent any // Defines where the pipeline will run (any available agent)
 
     environment {
+        // Docker image name for your frontend service
         IMAGE_NAME = 'rani19/gogo-main-frontend'
+        // Tag for the Docker image, incorporating the Jenkins build number for uniqueness
         TAG = "build-${env.BUILD_NUMBER}"
+        // URL for your development repository (frontend code)
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+        // URL for your configuration repository (Kubernetes manifests, etc.)
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+        // Jenkins credential ID for Docker Hub login (Username with Password)
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        SLACK_WEBHOOK = credentials('slack-webhook')
+        // Jenkins credential ID for Slack webhook (Secret Text)
+        SLACK_CREDENTIAL_ID = 'slack-webhook' // Use ID for withCredentials
     }
 
     options {
+        // Keep only the last 5 successful builds and their logs
         buildDiscarder(logRotator(numToKeepStr: '5'))
+        // Set a global timeout for the entire pipeline
         timeout(time: 20, unit: 'MINUTES')
     }
 
     stages {
-
         stage('📥 Clone Dev Repo') {
             steps {
+                // Clone the development repository into a 'dev' subdirectory in the workspace
                 dir('dev') {
                     git url: "${DEV_REPO_URL}", branch: 'main'
                 }
@@ -27,25 +35,27 @@ pipeline {
 
         stage('📁 Clone Config Repo') {
             steps {
+                // Clone the configuration repository into a 'config' subdirectory in the workspace
                 dir('config') {
                     git url: "${CONFIG_REPO_URL}", branch: 'main'
                 }
             }
         }
 
-        stage('🔍 Check Frontend Changes') {
+        stage('🕵️ Check Frontend Changes') {
             steps {
                 dir('dev') {
                     script {
-                        def changed = sh(
+                        // Check if there are any changes in the 'frontend/' directory since the last commit
+                        def frontendChanged = sh(
                             script: "git diff --name-only HEAD~1 HEAD | grep -q '^frontend/'",
-                            returnStatus: true
+                            returnStatus: true // Return 0 for success (found changes), 1 for failure (no changes)
                         ) == 0
 
-                        if (!changed) {
+                        if (!frontendChanged) {
                             echo "⚠️ No changes in frontend code. Aborting..."
-                            currentBuild.result = 'ABORTED'
-                            error("No changes in frontend/")
+                            currentBuild.result = 'ABORTED' // Set build status to ABORTED
+                            error("No changes in frontend/") // Terminate pipeline with an error message
                         }
                     }
                 }
@@ -57,18 +67,24 @@ pipeline {
                 dir('dev') {
                     script {
                         echo "📦 Building image ${IMAGE_NAME}:${TAG}"
+                        // Build the Docker image from the frontend/Dockerfile
+                        // The build context is 'frontend' relative to the 'dev' directory
                         docker.build("${IMAGE_NAME}:${TAG}", "-f frontend/Dockerfile frontend")
                     }
                 }
             }
         }
 
-        stage('📤 Push to Docker Hub') {
+        stage('🚀 Push to Docker Hub') {
             steps {
+                // Use Docker Hub credentials securely
                 withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     script {
+                        // Authenticate with Docker Hub registry
                         docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
+                            // Push the image with the unique build tag
                             docker.image("${IMAGE_NAME}:${TAG}").push()
+                            // Also push the same image with the 'latest' tag
                             docker.image("${IMAGE_NAME}:${TAG}").push("latest")
                         }
                     }
@@ -76,18 +92,19 @@ pipeline {
             }
         }
 
-        stage('✏️ Update Frontend Deployment YAML') {
+        stage('✏️ Update Deployment YAML') {
             steps {
                 dir('config') {
                     script {
-                        def filePath = "k8s/frontend/deployment.yaml"
-                        def newImage = "${IMAGE_NAME}:${TAG}"
+                        def filePath = "k8s/frontend/deployment.yaml" // Path to the Kubernetes deployment YAML
+                        def newImage = "${IMAGE_NAME}:${TAG}"       // The new image tag to update
                         echo "🔧 Updating ${filePath} with new image: ${newImage}"
 
+                        // Use 'sed' to replace the image tag in the deployment YAML
                         sh """
                             sed -i 's|image:.*|image: ${newImage}|' ${filePath}
                         """
-                        sh "cat ${filePath}"
+                        sh "cat ${filePath}" // Print the updated file content for verification
                     }
                 }
             }
@@ -96,17 +113,20 @@ pipeline {
         stage('📤 Commit & Push Changes') {
             steps {
                 dir('config') {
+                    // Use GitHub personal access token for pushing changes
                     withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
                         script {
                             sh """
                                 git config user.email "rani.saed19@gmail.com"
                                 git config user.name "Rani Saed (CI/CD)"
-                                git add k8s/frontend/deployment.yaml
+                                git add k8s/frontend/deployment.yaml # Stage the updated deployment YAML
 
+                                # Check if there are actual changes staged before committing
                                 if ! git diff --cached --quiet; then
-                                    git commit -m "🚀 Update frontend image to ${TAG}"
+                                    git commit -m "🚀 Update frontend image to ${TAG}" # Commit with a descriptive message
+                                    # Set the remote URL with the token for authentication
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
-                                    git push origin main
+                                    git push origin main # Push changes to the main branch
                                 else
                                     echo "No changes to commit"
                                 fi
@@ -117,33 +137,82 @@ pipeline {
             }
         }
 
-        stage('📣 Notify Slack') {
+        stage('❤️ Health Check') {
             steps {
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Frontend* CI/CD succeeded — *${TAG}* deployed."}' \
-                    ${SLACK_WEBHOOK}
-                """
+                script {
+                    echo "🔍 Checking frontend health..."
+                    def maxAttempts = 15 // Max number of attempts to check health
+                    def waitTime = 10 // Seconds to wait between attempts
+                    def totalTimeout = maxAttempts * waitTime // Total timeout for the health check stage
+
+                    timeout(time: totalTimeout, unit: 'SECONDS') { // Global timeout for this specific stage
+                        def healthy = false
+                        // The frontend runs on internal port 80 as per your docker-compose.yml
+                        def frontendUrl = "http://gogo-dr-frontend:80"
+
+                        for (int i = 1; i <= maxAttempts; i++) {
+                            echo "Attempt ${i}/${maxAttempts}: Curling ${frontendUrl}..."
+                            // Use curl -s -f: silent, fail on HTTP errors (4xx/5xx).
+                            // returnStatus: true captures the exit status of curl.
+                            // A 0 status means curl succeeded and the HTTP response was 2xx.
+                            def healthCheckStatus = sh(
+                                script: "curl -s -f ${frontendUrl}",
+                                returnStatus: true
+                            )
+
+                            // If curl -f succeeds, its exit status will be 0, indicating a 2xx HTTP response
+                            if (healthCheckStatus == 0) {
+                                echo "✅ Frontend is healthy on attempt ${i} (HTTP 2xx)!"
+                                healthy = true
+                                break // Health check passed, exit the loop
+                            } else {
+                                echo "❌ Frontend not yet healthy or returned an error status."
+                                if (i < maxAttempts) {
+                                    sleep waitTime // Wait before the next attempt
+                                }
+                            }
+                        }
+
+                        if (!healthy) {
+                            // If loop finishes without the service becoming healthy, fail the pipeline
+                            error "❌ Frontend health check failed after ${maxAttempts} attempts and ${totalTimeout} seconds!"
+                        }
+                    }
+                }
             }
         }
     }
 
+    // Post-build actions based on pipeline result
     post {
+        success {
+            echo "✅ Frontend image pushed and deployment updated."
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "✅ *Frontend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
+                """
+            }
+        }
+
         aborted {
             echo "⏹️ Pipeline aborted (no frontend changes)"
-            sh """
-                curl -X POST -H 'Content-type: application/json' \
-                --data '{"text": "⚠️ *Frontend Build Aborted* — No code changes detected."}' \
-                ${SLACK_WEBHOOK}
-            """
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "⚠️ *Frontend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                """
+            }
         }
+
         failure {
             echo "❌ Pipeline failed"
-            sh """
-                curl -X POST -H 'Content-type: application/json' \
-                --data '{"text": "❌ *Frontend Build Failed* — Check Jenkins pipeline for errors."}' \
-                ${SLACK_WEBHOOK}
-            """
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "❌ *Frontend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                """
+            }
         }
     }
 }
