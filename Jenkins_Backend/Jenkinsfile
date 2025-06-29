@@ -151,21 +151,21 @@ pipeline {
                     echo "🔄 **Restoring data from Kubernetes backend (5000) to Main Backend (5001)**..."
                     // This command assumes 'gogo-backend' is your main backend container name.
                     // It ensures data is synced before checking other services.
-                    sh 'docker exec gogo-backend python /app/seed.py'
+                    sh 'docker exec gogo-backend python /app/seed.py || true' // Added || true to prevent pipeline failure if gogo-backend is down
 
-                    echo "🔍 Checking if **Main Frontend container (gogo-frontend)** is running..."
+                    echo "🔍 Checking if **Main Frontend container (gogo-main-frontend)** is running..."
                     def frontendRunning = sh(
-                        script: "docker ps --filter 'name=gogo-frontend' --format '{{.Names}}'", // Corrected filter name
+                        script: "docker ps --filter 'name=gogo-main-frontend' --format '{{.Names}}'",
                         returnStdout: true
                     ).trim()
 
-                    if (frontendRunning == 'gogo-frontend') {
-                        echo "✅ Main Frontend container (gogo-frontend) is running. Connecting DR Frontend to Main Backend (5001)."
+                    if (frontendRunning == 'gogo-main-frontend') {
+                        echo "✅ Main Frontend container (gogo-main-frontend) is running. Connecting DR Frontend to Main Backend (5001)."
                         // Ensure DR frontend is started if it wasn't already.
                         sh "docker start gogo-dr-frontend || true"
                         echo "Main Frontend (3000) is already active. No failover needed for frontend."
                     } else {
-                        echo "🚨 Main Frontend container (gogo-frontend) is **NOT** running. Launching DR Frontend (gogo-dr-frontend) (on 3002) and connecting it to Main Backend (5001)..."
+                        echo "🚨 Main Frontend container (gogo-main-frontend) is **NOT** running. Launching DR Frontend (gogo-dr-frontend) (on 3002) and connecting it to Main Backend (5001)..."
                         sh "docker start gogo-dr-frontend || true"
                         // Add any specific commands here if gogo-dr-frontend needs explicit configuration to point to 5001
                         // For example, if it needs environment variables or a restart after config changes.
