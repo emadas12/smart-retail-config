@@ -1,167 +1,190 @@
 pipeline {
-  agent any
+    agent any
 
-  environment {
-    IMAGE_NAME = 'rani19/backend'
-    TAG = "build-${env.BUILD_NUMBER}"
-    DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
-    CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+    environment {
+        IMAGE_NAME = 'rani19/backend'
+        TAG = "build-${env.BUILD_NUMBER}"
+        DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+        CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+        DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+        GITHUB_PUSH_TOKEN_ID = 'github-push-token'
 
-    DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-    SLACK_CREDENTIAL_ID = 'slack-webhook'
-    GITHUB_PUSH_TOKEN_ID = 'github-push-token'
+        // Health URLs
+        HOST_BACKEND_HEALTH_URL = 'http://localhost:5000/health'
+        MAIN_CONTAINER_BACKEND_HEALTH_URL = 'http://localhost:5001/health'
+        DR_BACKEND_HEALTH_URL = 'http://localhost:5002/health'
+        MAIN_FRONTEND_HEALTH_URL = 'http://localhost:3000'
+        DR_FRONTEND_HEALTH_URL = 'http://localhost:3002'
 
-    HOST_BACKEND_HEALTH_URL = 'http://localhost:5000/health'
-    MAIN_CONTAINER_BACKEND_HEALTH_URL = 'http://localhost:5001/health'
-    DR_BACKEND_HEALTH_URL = 'http://localhost:5002/health'
+        // Container names
+        MAIN_CONTAINER_BACKEND_NAME = 'gogo-backend'
+        DR_BACKEND_CONTAINER_NAME = 'gogo-dr-backend'
+        DR_FRONTEND_CONTAINER_NAME = 'gogo-dr-frontend'
 
-    MAIN_FRONTEND_HEALTH_URL = 'http://localhost:3000'
-    DR_FRONTEND_HEALTH_URL = 'http://localhost:3002'
+        // Slack
+        SLACK_CREDENTIAL_ID = 'slack-webhook'
+        SLACK_CHANNEL = '#devops-alerts'
 
-    MAIN_CONTAINER_BACKEND_NAME = 'gogo-backend'
-    DR_BACKEND_CONTAINER_NAME = 'gogo-dr-backend'
-    DR_FRONTEND_CONTAINER_NAME = 'gogo-dr-frontend'
-
-    SLACK_CHANNEL = "#devops-alerts"
-  }
-
-  options {
-    buildDiscarder(logRotator(numToKeepStr: '5'))
-    timeout(time: 30, unit: 'MINUTES')
-    disableConcurrentBuilds()
-    ansiColor('xterm')
-  }
-
-  stages {
-
-    stage('📥 Clone Repos') {
-      steps {
-        cleanWs()
-        dir('dev') { git url: "${DEV_REPO_URL}", branch: 'main' }
-        dir('config') { git url: "${CONFIG_REPO_URL}", branch: 'main' }
-      }
+        HEALTH_CHECK_MAX_ATTEMPTS = 10
+        HEALTH_CHECK_WAIT_TIME_SECONDS = 5
     }
 
-    stage('🕵️ Check Backend Changes') {
-      steps {
-        dir('dev') {
-          script {
-            def changed = sh(script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/' || true", returnStatus: true) == 0
-            if (!changed) {
-              echo "❌ No backend changes."
-              currentBuild.result = 'ABORTED'
-              error("No backend changes.")
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 25, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        ansiColor('xterm')
+    }
+
+    stages {
+        stage('📥 Clone Dev Repo') {
+            steps {
+                cleanWs()
+                dir('dev') {
+                    git url: "${DEV_REPO_URL}", branch: 'main'
+                }
             }
-          }
         }
-      }
-    }
 
-    stage('🐳 Build & Push Image') {
-      steps {
-        dir('dev') {
-          script {
-            docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
-            docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
-              docker.image("${IMAGE_NAME}:${TAG}").push()
-              docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+        stage('📁 Clone Config Repo') {
+            steps {
+                dir('config') {
+                    git url: "${CONFIG_REPO_URL}", branch: 'main'
+                }
             }
-          }
         }
-      }
-    }
 
-    stage('✏️ Update Deployment YAML') {
-      steps {
-        dir('config') {
-          sh "sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' k8s/backend/deployment.yaml"
-        }
-      }
-    }
-
-    stage('📤 Commit Config Changes') {
-      steps {
-        dir('config') {
-          withCredentials([string(credentialsId: "${GITHUB_PUSH_TOKEN_ID}", variable: 'GIT_TOKEN')]) {
-            sh """
-              git config user.email 'rani.saed19@gmail.com'
-              git config user.name 'Rani Saed (CI/CD)'
-              git add k8s/backend/deployment.yaml
-              git commit -m 'Update backend image to ${TAG}' || echo 'No changes'
-              git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
-              git push origin main || echo 'Nothing to push'
-            """
-          }
-        }
-      }
-    }
-
-    stage('❤️ Health Check + DR') {
-      steps {
-        script {
-          def isHealthy = { name, url, keyword = null ->
-            def res = sh(script: "curl -s ${url} || true", returnStdout: true).trim()
-            def code = sh(script: "curl -s -o /dev/null -w '%{http_code}' ${url} || echo 000", returnStdout: true).trim()
-            return (code == "200" || code.startsWith("3")) && (keyword == null || res.contains(keyword))
-          }
-
-          def backend5000 = isHealthy("5000", "${HOST_BACKEND_HEALTH_URL}", '"status":"healthy"')
-          def frontend3000 = isHealthy("3000", "${MAIN_FRONTEND_HEALTH_URL}")
-          def backend5001 = isHealthy("5001", "${MAIN_CONTAINER_BACKEND_HEALTH_URL}", '"status":"healthy"')
-
-          if (backend5000) {
-            echo "✅ 5000 is UP – syncing data to 5001"
-            sh "docker exec -i ${MAIN_CONTAINER_BACKEND_NAME} bash -c 'python /app/seed.py'"
-          } else {
-            echo "❌ 5000 is DOWN – skipping sync"
-          }
-
-          if (!backend5000 || !frontend3000) {
-            echo "🚨 PRIMARY DOWN – activating DR"
-            sh "docker start ${DR_BACKEND_CONTAINER_NAME} || true"
-            sh "docker start ${DR_FRONTEND_CONTAINER_NAME} || true"
-
-            def drBackend = isHealthy("5002", "${DR_BACKEND_HEALTH_URL}", '"status":"healthy"')
-            def drFrontend = isHealthy("3002", "${DR_FRONTEND_HEALTH_URL}")
-
-            if (!drBackend || !drFrontend) {
-              error "❌ DR components unhealthy. Abort."
+        stage('🕵️ Check Backend Changes') {
+            steps {
+                dir('dev') {
+                    script {
+                        def changed = sh(script: "git diff --name-only HEAD~1 HEAD | grep '^backend/' || true", returnStatus: true) == 0
+                        if (!changed) {
+                            echo "⚠️ No changes in backend/"
+                            currentBuild.result = 'ABORTED'
+                            error("Nothing to build")
+                        }
+                    }
+                }
             }
-
-            echo "🔁 Switching Frontend env to DR"
-            sh "echo 'VITE_API_URL=http://localhost:5002/api' > dev/frontend/.env.production"
-
-            slackSend(channel: SLACK_CHANNEL, color: 'danger', message: "🚨 *DR Activated* - Main 5000 or 3000 down.\nBackend: 5002, Frontend: 3002.\n${env.BUILD_URL}")
-            currentBuild.result = 'UNSTABLE'
-          } else {
-            echo "✅ All primary systems healthy"
-            if (!backend5001) {
-              error "❌ 5001 unhealthy despite 5000 being up"
-            }
-
-            echo "✅ Resetting Frontend env to Primary"
-            sh "echo 'VITE_API_URL=http://localhost:5000/api' > dev/frontend/.env.production"
-          }
         }
-      }
-    }
-  }
 
-  post {
-    always {
-      cleanWs()
+        stage('🐳 Build & Push Docker Image') {
+            steps {
+                dir('dev') {
+                    script {
+                        docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
+                    }
+                }
+
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    script {
+                        docker.withRegistry('https://index.docker.io/v1/', "${DOCKER_CREDENTIALS_ID}") {
+                            docker.image("${IMAGE_NAME}:${TAG}").push()
+                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('✏️ Update Deployment YAML') {
+            steps {
+                dir('config') {
+                    script {
+                        def file = "k8s/backend/deployment.yaml"
+                        sh "sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' ${file}"
+                    }
+                }
+            }
+        }
+
+        stage('📤 Commit & Push Changes') {
+            steps {
+                dir('config') {
+                    withCredentials([string(credentialsId: "${GITHUB_PUSH_TOKEN_ID}", variable: 'GIT_TOKEN')]) {
+                        script {
+                            sh """
+                                git config user.email 'rani.saed19@gmail.com'
+                                git config user.name 'Rani Saed (CI/CD)'
+                                git add k8s/backend/deployment.yaml
+                                git commit -m '🚀 Update backend image to ${TAG}' || echo 'No changes'
+                                git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
+                                git push origin main || echo 'Nothing to push'
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('❤️ Health Check & DR') {
+            steps {
+                script {
+                    def isHealthy = { name, url ->
+                        def attempts = 0
+                        while (attempts < HEALTH_CHECK_MAX_ATTEMPTS.toInteger()) {
+                            def code = sh(script: "curl -s -o /dev/null -w '%{http_code}' ${url} || true", returnStdout: true).trim()
+                            if (code == "200") {
+                                echo "✅ ${name} is healthy"
+                                return true
+                            }
+                            echo "⏳ ${name} not ready (code: ${code}), retrying..."
+                            sleep HEALTH_CHECK_WAIT_TIME_SECONDS.toInteger()
+                            attempts++
+                        }
+                        return false
+                    }
+
+                    def backendUp = isHealthy("Main Backend", HOST_BACKEND_HEALTH_URL)
+                    if (backendUp) {
+                        echo "Running seed.py to sync data into container backend..."
+                        sh "docker exec -i ${MAIN_CONTAINER_BACKEND_NAME} bash -c 'python /app/seed.py'"
+                    }
+
+                    def frontendUp = isHealthy("Main Frontend", MAIN_FRONTEND_HEALTH_URL)
+                    def mainContainerBackendUp = isHealthy("Main Container Backend", MAIN_CONTAINER_BACKEND_HEALTH_URL)
+
+                    if (!backendUp || !frontendUp) {
+                        echo "🚨 DR mode activated - starting DR services..."
+                        sh "docker start ${DR_BACKEND_CONTAINER_NAME} || true"
+                        sh "docker start ${DR_FRONTEND_CONTAINER_NAME} || true"
+
+                        def drBackendUp = isHealthy("DR Backend", DR_BACKEND_HEALTH_URL)
+                        def drFrontendUp = isHealthy("DR Frontend", DR_FRONTEND_HEALTH_URL)
+
+                        if (!drBackendUp || !drFrontendUp) {
+                            error "❌ DR services failed to become healthy"
+                        }
+
+                        echo "✅ DR services are healthy and running"
+                    } else {
+                        echo "✅ No need for DR - all primary services are up"
+                        if (!mainContainerBackendUp) {
+                            error "⚠️ Primary container backend unhealthy"
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    success {
-      slackSend(channel: SLACK_CHANNEL, color: 'good', message: "✅ *Backend CI/CD Success*\nImage: *${TAG}* deployed successfully.\n${env.BUILD_URL}")
-    }
+    post {
+        success {
+            echo "🎉 Pipeline succeeded"
+        }
 
-    aborted {
-      slackSend(channel: SLACK_CHANNEL, color: 'warning', message: "⚠️ *Build Aborted* - No backend changes.\n${env.BUILD_URL}")
-    }
+        failure {
+            echo "❌ Pipeline failed"
+        }
 
-    failure {
-      slackSend(channel: SLACK_CHANNEL, color: 'danger', message: "❌ *Backend CI/CD Failed*\nCheck logs: ${env.BUILD_URL}")
+        aborted {
+            echo "⏹️ Pipeline aborted (nothing to build)"
+        }
+
+        always {
+            cleanWs()
+        }
     }
-  }
 }
