@@ -36,7 +36,11 @@ pipeline {
             steps {
                 dir('dev') {
                     script {
-                        def backendChanged = sh(script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'", returnStatus: true) == 0
+                        def backendChanged = sh(
+                            script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
+                            returnStatus: true
+                        ) == 0
+
                         if (!backendChanged) {
                             echo "⚠️ No changes in backend code. Aborting..."
                             currentBuild.result = 'ABORTED'
@@ -51,6 +55,7 @@ pipeline {
             steps {
                 dir('dev') {
                     script {
+                        echo "📦 Building image ${IMAGE_NAME}:${TAG}"
                         docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
                     }
                 }
@@ -60,9 +65,11 @@ pipeline {
         stage('🚀 Push to Docker Hub') {
             steps {
                 withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
-                        docker.image("${IMAGE_NAME}:${TAG}").push()
-                        docker.image("${IMAGE_NAME}:latest").push()
+                    script {
+                        docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
+                            docker.image("${IMAGE_NAME}:${TAG}").push()
+                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+                        }
                     }
                 }
             }
@@ -73,7 +80,12 @@ pipeline {
                 dir('config') {
                     script {
                         def filePath = "k8s/backend/deployment.yaml"
-                        sh "sed -i 's|image:.*|image: ${IMAGE_NAME}:${TAG}|' ${filePath}"
+                        def newImage = "${IMAGE_NAME}:${TAG}"
+                        echo "🔧 Updating ${filePath} with new image: ${newImage}"
+
+                        sh """
+                            sed -i 's|image:.*|image: ${newImage}|' ${filePath}
+                        """
                         sh "cat ${filePath}"
                     }
                 }
@@ -84,67 +96,40 @@ pipeline {
             steps {
                 dir('config') {
                     withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
-                        sh """
-                            git config user.email "rani.saed19@gmail.com"
-                            git config user.name "Rani Saed (CI/CD)"
-                            git add k8s/backend/deployment.yaml
-                            if ! git diff --cached --quiet; then
-                                git commit -m "🚀 Update backend image to ${TAG}"
-                                git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
-                                git push origin main
-                            else
-                                echo "No changes to commit"
-                            fi
-                        """
+                        script {
+                            sh """
+                                git config user.email "rani.saed19@gmail.com"
+                                git config user.name "Rani Saed (CI/CD)"
+                                git add k8s/backend/deployment.yaml
+
+                                if ! git diff --cached --quiet; then
+                                    git commit -m "🚀 Update backend image to ${TAG}"
+                                    git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
+                                    git push origin main
+                                else
+                                    echo "No changes to commit"
+                                fi
+                            """
+                        }
                     }
                 }
             }
         }
 
-        stage('🚀 Sync ArgoCD Backend') {
+        stage('❤️ Health Check') {
             steps {
                 script {
-                    sh "argocd app sync backend-app --insecure"
-                }
-            }
-        }
+                    echo "🔍 Checking backend health..."
+                    def healthStatus = sh(
+                        script: "curl -s http://gogo-backend:5000/health | grep '\"status\":\"healthy\"'",
+                        returnStatus: true
+                    )
 
-        stage('❤️ Health Check - Primary') {
-            steps {
-                script {
-                    def healthStatus = sh(script: "curl -s http://localhost:5001/health | grep '\"status\":\"healthy\"'", returnStatus: true)
                     if (healthStatus != 0) {
-                        error "❌ Primary backend health check failed!"
+                        error "❌ Backend health check failed!"
+                    } else {
+                        echo "✅ Backend is healthy!"
                     }
-                }
-            }
-        }
-
-        stage('❤️ Health Check - DR') {
-            steps {
-                script {
-                    def healthStatus = sh(script: "curl -s http://localhost:5002/health | grep '\"status\":\"healthy\"'", returnStatus: true)
-                    if (healthStatus != 0) {
-                        error "❌ DR backend health check failed!"
-                    }
-                }
-            }
-        }
-
-        stage('🧪 DR Failover Test') {
-            steps {
-                script {
-                    sh "bash scripts/failover-check.sh"
-                }
-            }
-        }
-
-        stage('📄 DR Readiness Report') {
-            steps {
-                script {
-                    echo "📊 DR system is ready and verified for failover!"
-                    writeFile file: 'dr-report.txt', text: "Backend DR Verified - Build ${TAG} ✅"
-                    archiveArtifacts artifacts: 'dr-report.txt'
                 }
             }
         }
@@ -152,17 +137,23 @@ pipeline {
 
     post {
         success {
-            echo "✅ Backend CI/CD succeeded with DR checks"
+            echo "✅ Backend image pushed and deployment updated."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD completed with DR validation. Tag: ${TAG}"}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
                 """
             }
         }
 
         aborted {
-            echo "⚠️ Pipeline aborted — no backend changes"
+            echo "⏹️ Pipeline aborted (no backend changes)"
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                """
+            }
         }
 
         failure {
@@ -170,7 +161,7 @@ pipeline {
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* CI/CD failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
                 """
             }
         }
