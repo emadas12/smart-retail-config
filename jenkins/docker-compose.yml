@@ -1,27 +1,33 @@
+# Use version 3.8 of Docker Compose file format
 version: '3.8'
 
 services:
+  # Jenkins service definition
   jenkins:
     build:
+      # Context points to the current directory where this docker-compose.yml resides
       context: .
       dockerfile: Dockerfile
     container_name: gogo-jenkins
     user: root
     restart: unless-stopped
     ports:
-      - "8081:8080"
-      - "50000:50000"
+      - "8081:8080" # Jenkins UI
+      - "50000:50000" # Jenkins agents
     environment:
       - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
     volumes:
+      # These volumes are relative to this docker-compose.yml file's location
       - ./jenkins_data:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
       - ./kubeconfig:/var/jenkins_home/.kube/config
     networks:
-      - gogo-net
+      - gogo-net # Connect Jenkins to the shared 'gogo-net' network
     dns:
-      - 8.8.8.8  # ✅ לפתור בעיות DNS בחיבור לאינטרנט
+      - 8.8.8.8
 
 networks:
   gogo-net:
-    driver: bridge
+    # This tells Docker Compose to use an existing network named 'gogo-net'
+    # It must be created by another docker-compose.yml (the main one) or manually.
+    external: true
