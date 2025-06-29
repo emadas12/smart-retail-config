@@ -94,13 +94,21 @@ pipeline {
 
         stage('✅ Health Check - Primary') {
             steps {
-                echo "🔎 Checking backend health at http://localhost:5000/health"
+                echo "🔎 Starting port-forward for backend service"
                 script {
+                    // Start port-forwarding in background
+                    sh "kubectl port-forward service/backend 5000:5000 -n default & sleep 5"
+
+                    // Perform health check
                     def response = sh(
                         script: "curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5000/health || true",
                         returnStdout: true
                     ).trim()
 
+                    // Kill port-forward
+                    sh "pkill -f 'kubectl port-forward' || true"
+
+                    // Validate response
                     if (response != "200") {
                         error("❌ Health check failed! Got status: ${response}")
                     } else {
