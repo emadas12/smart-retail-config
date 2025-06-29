@@ -1,14 +1,12 @@
-// Jenkinsfile - Declarative Pipeline for Smart Retail Project with DR Failover
+// Jenkinsfile - Smart Retail DevOps Pipeline with DR Failover & Slack Notification
 
 pipeline {
     agent any
 
     environment {
-        // Docker Hub config
         DOCKER_HUB_ORG = "rani19"
         DOCKER_HUB_IMAGE_TAG = "${env.BUILD_NUMBER}"
 
-        // Compose service names
         MAIN_BACKEND_SERVICE = "backend"
         MAIN_FRONTEND_SERVICE = "main-frontend"
         DR_BACKEND_SERVICE = "dr-backend"
@@ -16,7 +14,6 @@ pipeline {
         MAIN_DB_SERVICE = "main-db"
         PGADMIN_SERVICE = "pgadmin"
 
-        // Health URLs
         MAIN_BACKEND_HEALTH_URL = "http://localhost:5001/health"
         MAIN_FRONTEND_HEALTH_URL = "http://localhost:3000/"
         DR_BACKEND_HEALTH_URL = "http://localhost:5002/health"
@@ -25,6 +22,11 @@ pipeline {
         HEALTH_CHECK_RETRIES = 10
         HEALTH_CHECK_INTERVAL_SECONDS = 5
         HEALTH_CHECK_TIMEOUT_SECONDS = 60
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
     }
 
     stages {
@@ -103,8 +105,8 @@ pipeline {
                     parallel {
                         stage('Main Backend') { steps { checkHealth("Main Backend", MAIN_BACKEND_HEALTH_URL) } }
                         stage('Main Frontend') { steps { checkHealth("Main Frontend", MAIN_FRONTEND_HEALTH_URL) } }
-                        stage('DR Backend') { steps { checkHealth("DR Backend", DR_BACKEND_HEALTH_URL) } }
-                        stage('DR Frontend') { steps { checkHealth("DR Frontend", DR_FRONTEND_HEALTH_URL) } }
+                        stage('DR Backend')   { steps { checkHealth("DR Backend", DR_BACKEND_HEALTH_URL) } }
+                        stage('DR Frontend')  { steps { checkHealth("DR Frontend", DR_FRONTEND_HEALTH_URL) } }
                     }
                 }
             }
