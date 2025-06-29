@@ -103,6 +103,9 @@ pipeline {
                         echo "🔧 Updating ${filePath} with new image: ${newImage}"
 
                         // Use 'sed' to replace the image tag in the deployment YAML
+                        // Note: 'sed -i' behaves differently on macOS (BSD sed) vs. Linux (GNU sed).
+                        // For portability, consider 'sed -i.bak' or platform-specific logic.
+                        // Assuming GNU sed compatibility or a controlled environment.
                         sh """
                             sed -i 's|image:.*|image: ${newImage}|' ${filePath}
                         """
@@ -152,6 +155,9 @@ pipeline {
                         for (int i = 1; i <= maxAttempts; i++) {
                             echo "Attempt ${i}/${maxAttempts}: Curling http://gogo-backend:5000/health..."
                             // Execute curl and grep for the healthy status string
+                            // -s: silent mode for curl
+                            // -q: quiet mode for grep (only sets exit status)
+                            // returnStatus: true will capture the exit status of the piped command (grep's status)
                             def healthCheckStatus = sh(
                                 script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"'",
                                 returnStatus: true
@@ -178,48 +184,6 @@ pipeline {
                 }
             }
         }
-
-        stage('🔄 Synchronize Local Development DB') {
-            steps {
-                script {
-                    echo "Starting local Docker Compose services for backend and db sync..."
-                    // Navigate to the 'dev' directory within the Jenkins workspace.
-                    // This 'dev' directory contains the docker-compose.yml for your local services.
-                    dir('dev') {
-                        // --- Install Docker Compose CLI (more universal method) ---
-                        // Check if docker-compose is already installed
-                        def compose_exists = sh(script: "command -v docker-compose >/dev/null && echo 'true' || echo 'false'", returnStdout: true).trim()
-                        if (compose_exists == 'false') {
-                            echo "Docker Compose CLI not found. Installing..."
-                            sh """
-                                # Use sudo if necessary, depending on Jenkins agent's permissions
-                                sudo curl -L "https://github.com/docker/compose/releases/download/v2.24.5/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-                                sudo chmod +x /usr/local/bin/docker-compose
-                                echo "Docker Compose CLI installed."
-                            """
-                        } else {
-                            echo "Docker Compose CLI already installed."
-                        }
-                        // --- End Docker Compose CLI Installation ---
-
-                        sh """
-                            # Ensure the Docker Compose services are up and running, rebuilding 'backend'
-                            docker-compose up -d --build backend
-                            
-                            # Wait a bit for the DB to be ready if it was just started or restarted
-                            sleep 10
-                            
-                            echo "Executing seed script to synchronize local DB with Kubernetes data..."
-                            # docker exec targets the container on the host's Docker daemon.
-                            # The 'gogo-backend' container runs on the host, which Jenkins can interact with
-                            # via the mounted /var/run/docker.sock.
-                            docker exec -it gogo-backend bash -c "python /app/seed.py"
-                            echo "Local DB synchronization attempt complete."
-                        """
-                    }
-                }
-            }
-        }
     }
 
     // Post-build actions based on pipeline result
@@ -229,7 +193,7 @@ pipeline {
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & local DB synchronized!"}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
                 """
             }
         }
