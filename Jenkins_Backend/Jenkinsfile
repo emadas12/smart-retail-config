@@ -27,21 +27,22 @@ pipeline {
         SLACK_CREDENTIAL_ID = 'slack-webhook' // Ensure this ID matches your Jenkins credential
 
         // --- Health Check & Failover Configuration ---
-        // Assuming Jenkins agent is on the same host as Docker containers and ports are mapped.
-        MAIN_BACKEND_HEALTH_URL = 'http://localhost:5001/health' // gogo-backend, exposed on 5001
-        DR_BACKEND_HEALTH_URL = 'http://localhost:5002/health'   // gogo-dr-backend, exposed on 5002
-        MAIN_FRONTEND_HEALTH_URL = 'http://localhost:3000'       // Assuming a main frontend on 3000
-        DR_FRONTEND_HEALTH_URL = 'http://localhost:3002'         // gogo-dr-frontend, exposed on 3002
+        // These URLs match your `docker ps` output for localhost ports
+        MAIN_BACKEND_HEALTH_URL = 'http://localhost:5001/health' // gogo-backend
+        DR_BACKEND_HEALTH_URL = 'http://localhost:5002/health'   // gogo-dr-backend
+        MAIN_FRONTEND_HEALTH_URL = 'http://localhost:3000'       // gogo-main-frontend
+        DR_FRONTEND_HEALTH_URL = 'http://localhost:3002'         // gogo-dr-frontend
 
         // Docker container names from your `docker ps` output (for `docker exec`/`docker start`)
         MAIN_BACKEND_CONTAINER_NAME = 'gogo-backend'
         DR_BACKEND_CONTAINER_NAME = 'gogo-dr-backend'
-        DR_FRONTEND_CONTAINER_NAME = 'gogo-dr-frontend'
+        MAIN_FRONTEND_CONTAINER_NAME = 'gogo-main-frontend' // Added for clarity in DR logic
+        DR_FRONTEND_CONTAINER_NAME = 'gogo-dr-frontend'     // Added for clarity in DR logic
 
         // Health check parameters
         HEALTH_CHECK_MAX_ATTEMPTS = 15 // Increased attempts for robustness
-        HEALTH_CHECK_WAIT_TIME_SECONDS = 10 // Increased wait time
-        HEALTH_CHECK_TOTAL_TIMEOUT_SECONDS = 180 // Total timeout (e.g., 3 minutes)
+        HEALTH_CHECK_WAIT_TIME_SECONDS = 10 // Increased wait time between attempts
+        HEALTH_CHECK_TOTAL_TIMEOUT_SECONDS = 180 // Total timeout (e.g., 3 minutes) for a health check cycle
 
         // Slack channel for notifications
         SLACK_CHANNEL = "#devops-alerts" // Customize your Slack channel here
@@ -189,15 +190,18 @@ pipeline {
 
                             // For backend, check for specific 'healthy' status; for frontend, check 200/30x
                             if (serviceName.contains('Backend')) {
-                                def statusText = sh(
-                                    script: "curl -s --max-time 10 ${url} | grep -q '\"status\":\"healthy\"' || true",
-                                    returnStatus: true
-                                )
-                                if (responseCode == '200' && statusText == 0) {
+                                // Try to get the actual health status from the response body
+                                def healthResponseBody = sh(
+                                    script: "curl -s --max-time 10 ${url} || true", // || true to prevent curl errors from failing this sh step
+                                    returnStdout: true
+                                ).trim()
+                                def statusKeywordFound = (healthResponseBody =~ /"status"\s*:\s*"healthy"/).find()
+
+                                if (responseCode == '200' && statusKeywordFound) {
                                     echo "✅ ${serviceName} is healthy (HTTP ${responseCode}, status: healthy)."
                                     success = true
                                 } else {
-                                    echo "❌ ${serviceName} not yet healthy (HTTP ${responseCode}). Retrying in ${env.HEALTH_CHECK_WAIT_TIME_SECONDS}s..."
+                                    echo "❌ ${serviceName} not yet healthy (HTTP ${responseCode}, response: '${healthResponseBody.take(50)}...'). Retrying in ${env.HEALTH_CHECK_WAIT_TIME_SECONDS}s..."
                                 }
                             } else { // For frontends
                                 if (["200", "301", "302"].contains(responseCode)) {
@@ -224,32 +228,33 @@ pipeline {
                         echo "🚨 Primary services are DOWN. Initiating DR Failover procedures."
                         currentBuild.result = 'UNSTABLE' // Mark build as unstable if primary is down but DR takes over
 
+                        // Step 1: Ensure DR containers are started
                         echo "Starting DR Backend container: ${DR_BACKEND_CONTAINER_NAME}..."
                         sh "docker start ${DR_BACKEND_CONTAINER_NAME} || true" // Start if not running
                         echo "Starting DR Frontend container: ${DR_FRONTEND_CONTAINER_NAME}..."
                         sh "docker start ${DR_FRONTEND_CONTAINER_NAME} || true" // Start if not running
 
-                        // Verify DR Backend health
+                        // Step 2: Verify DR Backend health
                         def drBackendOk = checkHealth("DR Backend", DR_BACKEND_HEALTH_URL)
                         if (!drBackendOk) {
                             error "Critical: DR Backend failed to become healthy after primary failure. Aborting pipeline!"
                         }
                         echo "✅ DR Backend confirmed healthy."
 
-                        // Run the seed command on the *DR Backend* for data synchronization
+                        // Step 3: Run the seed command on the *DR Backend* for data synchronization
                         echo "Executing data seeding on DR Backend (${DR_BACKEND_CONTAINER_NAME})..."
-                        // Use '-i' for stdin, but not '-t' for TTY in non-interactive shell
+                        // Note: changed from gogo-backend to gogo-dr-backend for the seed command
                         sh "docker exec -i ${DR_BACKEND_CONTAINER_NAME} bash -c 'python /app/seed.py'"
                         echo "Data seeding on DR Backend completed."
 
-                        // Verify DR Frontend health
+                        // Step 4: Verify DR Frontend health
                         def drFrontendOk = checkHealth("DR Frontend", DR_FRONTEND_HEALTH_URL)
                         if (!drFrontendOk) {
                             error "Critical: DR Frontend failed to become healthy after primary failure. Aborting pipeline!"
                         }
                         echo "✅ DR Frontend confirmed healthy."
 
-                        // Notify about DR activation
+                        // Step 5: Notify about DR activation
                         slackSend(
                             channel: SLACK_CHANNEL,
                             color: 'danger',
@@ -269,10 +274,12 @@ pipeline {
     post {
         always {
             echo "--- 🧹 Cleaning up ---"
-            // Bring down Docker Compose services gracefully
-            sh "docker compose down --remove-orphans || true" // Use || true to prevent failure if already down
+            // Bring down Docker Compose services gracefully (assuming you use docker-compose outside this pipeline)
+            // If the services are kept running by a separate 'docker compose up -d', you might not want to tear them down here.
+            // If this pipeline is responsible for their lifecycle, then keep this.
+            // sh "docker compose down --remove-orphans || true" // Use || true to prevent failure if already down
 
-            // Kill any lingering kubectl port-forward processes
+            // Kill any lingering kubectl port-forward processes (if you are running any, not shown in current docker ps)
             sh "pkill -f \"kubectl port-forward\" || true"
 
             // Clean the workspace completely for the next build
