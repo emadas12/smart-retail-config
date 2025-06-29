@@ -148,10 +148,23 @@ pipeline {
         stage('🛡️ DR Failover & Sync') {
             steps {
                 script {
+                    // Initialize variables for DR report
+                    env.DR_FRONTEND_STATUS = "UNKNOWN"
+                    env.DR_BACKEND_STATUS = "UNKNOWN"
+                    env.DR_DATA_SYNC_STATUS = "UNKNOWN"
+                    env.DR_TEST_RESULT = "FAILURE" // Assume failure until proven otherwise
+
                     echo "🔄 **Restoring data from Kubernetes backend (5000) to Main Backend (5001)**..."
-                    // This command assumes 'gogo-backend' is your main backend container name.
-                    // It ensures data is synced before checking other services.
-                    sh 'docker exec gogo-backend python /app/seed.py || true' // Added || true to prevent pipeline failure if gogo-backend is down
+                    def mainBackendSeedSuccess = sh(
+                        script: 'docker exec gogo-backend python /app/seed.py || true',
+                        returnStatus: true
+                    )
+                    if (mainBackendSeedSuccess == 0) {
+                        env.DR_DATA_SYNC_STATUS = "Main Backend Seeded"
+                    } else {
+                        env.DR_DATA_SYNC_STATUS = "Main Backend Seed Failed or Not Running (Expected if main is down)"
+                    }
+
 
                     echo "🔍 Checking if **Main Frontend container (gogo-main-frontend)** is running..."
                     def frontendRunning = sh(
@@ -161,14 +174,19 @@ pipeline {
 
                     if (frontendRunning == 'gogo-main-frontend') {
                         echo "✅ Main Frontend container (gogo-main-frontend) is running. Connecting DR Frontend to Main Backend (5001)."
-                        // Ensure DR frontend is started if it wasn't already.
                         sh "docker start gogo-dr-frontend || true"
                         echo "Main Frontend (3000) is already active. No failover needed for frontend."
+                        env.DR_FRONTEND_STATUS = "Main Active"
                     } else {
                         echo "🚨 Main Frontend container (gogo-main-frontend) is **NOT** running. Launching DR Frontend (gogo-dr-frontend) (on 3002) and connecting it to Main Backend (5001)..."
                         sh "docker start gogo-dr-frontend || true"
-                        // Add any specific commands here if gogo-dr-frontend needs explicit configuration to point to 5001
-                        // For example, if it needs environment variables or a restart after config changes.
+                        // Add a health check here specifically for gogo-dr-frontend after potential start
+                        def drFrontendHealthy = sh(script: "curl -s http://localhost:3002 || true", returnStatus: true) // Example health check
+                        if (drFrontendHealthy == 0) {
+                            env.DR_FRONTEND_STATUS = "DR Activated & Healthy (3002)"
+                        } else {
+                            env.DR_FRONTEND_STATUS = "DR Activated but Health Check Failed (3002)"
+                        }
                     }
 
                     echo "🔍 Checking if **Main Backend container (gogo-backend)** is running..."
@@ -179,11 +197,88 @@ pipeline {
 
                     if (backendRunning == 'gogo-backend') {
                         echo "✅ Main Backend container (gogo-backend) is running. No failover needed for backend."
+                        env.DR_BACKEND_STATUS = "Main Active"
                     } else {
                         echo "🚨 Main Backend container (gogo-backend) is **NOT** running. Launching DR Backend (gogo-dr-backend) (on 5002) and seeding data..."
                         sh "docker start gogo-dr-backend || true"
                         echo "🌱 Running seed.py inside DR Backend container (gogo-dr-backend) to sync data from Kubernetes backend (5000)..."
-                        sh 'docker exec gogo-dr-backend python /app/seed.py'
+                        def drBackendSeedSuccess = sh(
+                            script: 'docker exec gogo-dr-backend python /app/seed.py',
+                            returnStatus: true
+                        )
+                        if (drBackendSeedSuccess == 0) {
+                            // After seeding, perform a health check on the DR backend
+                            def drBackendHealthy = sh(script: "curl -s http://localhost:5002/health | grep -q '\"status\":\"healthy\"'", returnStatus: true)
+                            if (drBackendHealthy == 0) {
+                                env.DR_BACKEND_STATUS = "DR Activated & Healthy (5002)"
+                                env.DR_DATA_SYNC_STATUS = "DR Backend Seeded Successfully"
+                            } else {
+                                env.DR_BACKEND_STATUS = "DR Activated but Health Check Failed (5002)"
+                                env.DR_DATA_SYNC_STATUS = "DR Backend Seeded but Health Check Failed"
+                            }
+                        } else {
+                             env.DR_BACKEND_STATUS = "DR Activated but Seed Failed (5002)"
+                             env.DR_DATA_SYNC_STATUS = "DR Backend Seed Failed"
+                        }
+                    }
+
+                    // Determine overall DR test result based on individual statuses
+                    if ((env.DR_FRONTEND_STATUS.contains("Active") || env.DR_FRONTEND_STATUS.contains("Activated & Healthy")) &&
+                        (env.DR_BACKEND_STATUS.contains("Active") || env.DR_BACKEND_STATUS.contains("Activated & Healthy")) &&
+                        (env.DR_DATA_SYNC_STATUS.contains("Seeded"))) { // Refine this logic based on your specific "pass" conditions
+                        env.DR_TEST_RESULT = "SUCCESS"
+                    } else {
+                        env.DR_TEST_RESULT = "FAILURE"
+                    }
+                }
+            }
+        }
+
+        stage('📊 Generate DR Readiness Reports') {
+            steps {
+                script {
+                    echo "--- DR Readiness Report ---"
+                    echo "Build Number: ${env.BUILD_NUMBER}"
+                    echo "Build URL: ${env.BUILD_URL}"
+                    echo "Timestamp: ${new Date().format('yyyy-MM-dd HH:mm:ss')}"
+                    echo "---------------------------"
+                    echo "DR Test Result: **${env.DR_TEST_RESULT}**"
+                    echo "DR Frontend Status: ${env.DR_FRONTEND_STATUS}"
+                    echo "DR Backend Status: ${env.DR_BACKEND_STATUS}"
+                    echo "DR Data Sync Status: ${env.DR_DATA_SYNC_STATUS}"
+                    echo "---------------------------"
+
+                    // You can save this to a file as a build artifact
+                    def reportContent = """
+                        DR Readiness Report
+                        -------------------
+                        Build Number: ${env.BUILD_NUMBER}
+                        Build URL: ${env.BUILD_URL}
+                        Timestamp: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
+                        -------------------
+                        DR Test Result: ${env.DR_TEST_RESULT}
+                        DR Frontend Status: ${env.DR_FRONTEND_STATUS}
+                        DR Backend Status: ${env.DR_BACKEND_STATUS}
+                        DR Data Sync Status: ${env.DR_DATA_SYNC_STATUS}
+                        -------------------
+                    """.stripIndent()
+
+                    writeFile file: 'dr-readiness-report.txt', text: reportContent
+                    archiveArtifacts artifacts: 'dr-readiness-report.txt', fingerprint: true
+
+                    // Send a richer Slack notification with the report summary
+                    withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                        def slackMessage = ""
+                        if (env.DR_TEST_RESULT == "SUCCESS") {
+                            slackMessage = "✅ *DR Readiness Test Passed!*\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nFrontend: ${env.DR_FRONTEND_STATUS}\\nBackend: ${env.DR_BACKEND_STATUS}\\nData Sync: ${env.DR_DATA_SYNC_STATUS}"
+                        } else {
+                            slackMessage = "❌ *DR Readiness Test FAILED!*\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nFrontend: ${env.DR_FRONTEND_STATUS}\\nBackend: ${env.DR_BACKEND_STATUS}\\nData Sync: ${env.DR_DATA_SYNC_STATUS}\\nCheck logs for details."
+                        }
+
+                        sh """
+                            curl -X POST -H 'Content-type: application/json' \
+                            --data '{"text": "${slackMessage}"}' $SLACK_WEBHOOK
+                        """
                     }
                 }
             }
