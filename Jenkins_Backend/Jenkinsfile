@@ -75,23 +75,6 @@ pipeline {
             }
         }
 
-        stage('🩺 Check Backend Container Health') {
-            steps {
-                script {
-                    def isHealthy = sh(
-                        script: "docker ps --filter 'name=gogo-backend' --filter 'status=running' --format '{{.Names}}' | grep -w gogo-backend",
-                        returnStatus: true
-                    ) == 0
-
-                    if (!isHealthy) {
-                        error("❌ Backend container is NOT running.")
-                    } else {
-                        echo "✅ Backend container is running and healthy."
-                    }
-                }
-            }
-        }
-
         stage('✏️ Update Deployment YAML') {
             steps {
                 dir('config') {
@@ -132,6 +115,24 @@ pipeline {
                 }
             }
         }
+
+        stage('❤️ Health Check') {
+            steps {
+                script {
+                    echo "🔍 Checking backend health..."
+                    def healthStatus = sh(
+                        script: "curl -s http://gogo-backend:5000/health | grep '\"status\":\"healthy\"'",
+                        returnStatus: true
+                    )
+
+                    if (healthStatus != 0) {
+                        error "❌ Backend health check failed!"
+                    } else {
+                        echo "✅ Backend is healthy!"
+                    }
+                }
+            }
+        }
     }
 
     post {
@@ -140,7 +141,7 @@ pipeline {
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed."}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
                 """
             }
         }
