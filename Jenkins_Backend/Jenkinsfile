@@ -103,9 +103,6 @@ pipeline {
                         echo "🔧 Updating ${filePath} with new image: ${newImage}"
 
                         // Use 'sed' to replace the image tag in the deployment YAML
-                        // Note: 'sed -i' behaves differently on macOS (BSD sed) vs. Linux (GNU sed).
-                        // For portability, consider 'sed -i.bak' or platform-specific logic.
-                        // Assuming GNU sed compatibility or a controlled environment.
                         sh """
                             sed -i 's|image:.*|image: ${newImage}|' ${filePath}
                         """
@@ -155,9 +152,6 @@ pipeline {
                         for (int i = 1; i <= maxAttempts; i++) {
                             echo "Attempt ${i}/${maxAttempts}: Curling http://gogo-backend:5000/health..."
                             // Execute curl and grep for the healthy status string
-                            // -s: silent mode for curl
-                            // -q: quiet mode for grep (only sets exit status)
-                            // returnStatus: true will capture the exit status of the piped command (grep's status)
                             def healthCheckStatus = sh(
                                 script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"'",
                                 returnStatus: true
@@ -184,23 +178,43 @@ pipeline {
                 }
             }
         }
+
+        stage('🔄 Synchronize Local Development DB') { // NEW STAGE ADDED HERE
+            steps {
+                script {
+                    echo "Starting local Docker Compose services for backend and db sync..."
+                    // Navigate to the directory containing your main docker-compose.yml
+                    // and bring up only the backend service and its dependencies (like db)
+                    // Ensure the backend service is configured with extra_hosts and seed.py
+                    sh """
+                        cd /Users/ranisaed/devops/DevOps-project/Zonata/Naruto/smart-retail-dev
+                        docker-compose up -d --build backend # Bring up backend, rebuilding it to ensure seed.py is latest
+                        # Wait a bit for the DB to be ready if it was just started or restarted
+                        sleep 10
+                        echo "Executing seed script to synchronize local DB with Kubernetes data..."
+                        docker exec -it gogo-backend bash -c "python /app/seed.py"
+                        echo "Local DB synchronization attempt complete."
+                    """
+                }
+            }
+        }
     }
 
     // Post-build actions based on pipeline result
     post {
         success {
             echo "✅ Backend image pushed and deployment updated."
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIALS_ID}", variable: 'SLACK_WEBHOOK')]) { // Changed SLACK_WEBHOOK to SLACK_CREDENTIAL_ID
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & local DB synchronized!"}' $SLACK_WEBHOOK
                 """
             }
         }
 
         aborted {
             echo "⏹️ Pipeline aborted (no backend changes)"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIALS_ID}", variable: 'SLACK_WEBHOOK')]) { // Changed SLACK_WEBHOOK to SLACK_CREDENTIAL_ID
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
@@ -210,7 +224,7 @@ pipeline {
 
         failure {
             echo "❌ Pipeline failed"
-            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIALS_ID}", variable: 'SLACK_WEBHOOK')]) { // Changed SLACK_WEBHOOK to SLACK_CREDENTIAL_ID
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
                     --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
