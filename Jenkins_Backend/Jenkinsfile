@@ -118,32 +118,27 @@ pipeline {
                     echo "🔍 Checking backend health..."
                     def maxAttempts = 15
                     def waitTime = 10
-                    def totalTimeout = maxAttempts * waitTime
+                    def healthy = false
 
-                    timeout(time: totalTimeout, unit: 'SECONDS') {
-                        def healthy = false
-                        for (int i = 1; i <= maxAttempts; i++) {
-                            echo "Attempt ${i}/${maxAttempts}: Curling http://gogo-backend:5000/health..."
-                            def healthCheckStatus = sh(
-                                script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"'",
-                                returnStatus: true
-                            )
-                            if (healthCheckStatus == 0) {
-                                echo "✅ Backend is healthy on attempt ${i}!"
-                                healthy = true
-                                break
-                            } else {
-                                echo "❌ Backend not yet healthy."
-                                if (i < maxAttempts) {
-                                    sleep waitTime
-                                }
+                    for (int i = 1; i <= maxAttempts; i++) {
+                        echo "Attempt ${i}/${maxAttempts}: Curling http://gogo-backend:5000/health..."
+                        def status = sh(
+                            script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"'",
+                            returnStatus: true
+                        )
+                        if (status == 0) {
+                            echo "✅ Backend is healthy on attempt ${i}!"
+                            healthy = true
+                            break
+                        } else {
+                            echo "❌ Backend not yet healthy."
+                            if (i < maxAttempts) {
+                                sleep waitTime
                             }
                         }
-
-                        if (!healthy) {
-                            error "❌ Backend health check failed after ${maxAttempts} attempts and ${totalTimeout} seconds!"
-                        }
                     }
+
+                    env.BACKEND_HEALTHY = healthy.toString()
                 }
             }
         }
@@ -151,26 +146,23 @@ pipeline {
         stage('🌐 DR Failover & Sync') {
             steps {
                 script {
-                    echo "🔍 Checking if Primary backend (http://localhost:5000) is alive..."
-
-                    def isPrimaryDown = sh (
-                        script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/health || echo 000",
-                        returnStdout: true
-                    ).trim() != "200"
-
-                    if (isPrimaryDown) {
+                    if (env.BACKEND_HEALTHY == "false") {
                         echo "🚨 Primary backend is DOWN. Initiating DR failover..."
 
-                        // Start DR containers
-                        echo "🟢 Starting DR Backend and Frontend containers (if needed)..."
                         sh 'docker start gogo-dr-backend || true'
                         sh 'docker start gogo-dr-frontend || true'
 
-                        // Sync DR backend data
                         echo "🌱 Syncing DR Backend from Kubernetes via seed.py..."
                         sh 'docker exec -i gogo-backend bash -c "python /app/seed.py"'
 
                         echo "✅ DR backend seeded successfully."
+
+                        withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                            sh """
+                                curl -X POST -H 'Content-type: application/json' \
+                                --data '{"text": "🚨 *Failover triggered*: Primary backend down. DR backend activated & synced."}' $SLACK_WEBHOOK
+                            """
+                        }
                     } else {
                         echo "✅ Primary backend is healthy. No DR action needed."
                     }
