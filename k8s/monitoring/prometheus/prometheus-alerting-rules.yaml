@@ -8,6 +8,7 @@ data:
     groups:
       - name: devops-project-alerts
         rules:
+          # Existing alerts...
           - alert: HighRequestVolumeRate
             expr: sum(rate(flask_http_request_total[1m])) > 1.66
             for: 30s
@@ -28,12 +29,31 @@ data:
               summary: "🔥 Backend is Down"
               description: "Prometheus cannot scrape the backend service."
 
+          # Refined 5xx Error Alert: High5xxErrorRate (Absolute Rate)
           - alert: High5xxErrorRate
-            expr: rate(flask_http_request_total{status=~"5.."}[1m]) > 0.5
-            for: 30s
+            expr: sum(rate(flask_http_request_total{status=~"5.."}[1m])) > 0.05 # Adjusted: A single 5xx error in a minute is 1/60 ~= 0.016. This fires on ~3+ errors/min.
+            for: 1m # Increased 'for' duration to reduce flapping for brief spikes
             labels:
               severity: critical
               team: backend
             annotations:
-              summary: "🔥 5xx Error Rate is high"
-              description: "Over 0.5 5xx errors/sec. Check logs."
+              summary: "🔥 Critical 5xx Error Rate Detected"
+              description: "The average rate of 5xx errors across all backend instances is over 0.05 errors/second (approx. 3 errors per minute) for 1 minute. Immediate investigation required."
+
+          # Recommended: High5xxErrorPercentage (Relative Rate for high-traffic)
+          - alert: High5xxErrorPercentage
+            expr: |
+              (
+                sum(rate(flask_http_request_total{status=~"5.."}[1m]))
+              /
+                sum(rate(flask_http_request_total[1m]))
+              )
+              * 100 > 5 # More than 5% of all requests are 5xx errors
+            for: 2m # Longer 'for' to smooth out fluctuations
+            labels:
+              severity: critical
+              team: backend
+            annotations:
+              summary: "🚨 High 5xx Error Percentage Detected"
+              description: "More than 5% of total requests to the backend are resulting in 5xx errors over the last 1 minute. This indicates a significant issue."
+            # Add a 'keep_firing_for' if supported by your Alertmanager setup for persistent alerts.
