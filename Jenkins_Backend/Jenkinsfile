@@ -18,8 +18,9 @@ pipeline {
         FRONTEND_IMAGE = 'rani19/gogo-main-frontend:latest' // IMPORTANT: Replace with your actual frontend image name
         // Image for the DR backend (5002). This will be the image built by THIS pipeline.
         DR_BACKEND_IMAGE = "${IMAGE_NAME}:${TAG}"
-        // Note: 'gogo-main-backend' (5001) is assumed to be running outside this pipeline's direct control
-        // and uses an image like 'smart-retail-dev-backend' for its operation.
+        // Image for your primary 'gogo-main-backend' (5001). Assumed to be externally managed.
+        // Replace with the actual image name if known.
+        MAIN_BACKEND_IMAGE = 'your-main-backend-image:latest' // Example: smart-retail-dev-backend:latest
 
         // --- Variables for Reporting DR Status (initial defaults) ---
         ACTIVE_FRONTEND_NAME = "UNKNOWN"
@@ -30,7 +31,7 @@ pipeline {
         DR_BACKEND_STATUS = "UNKNOWN"
         DR_DATA_SYNC_STATUS = "UNKNOWN"
         FRONTEND_API_URL_USED = "UNKNOWN"
-        CI_MAIN_BACKEND_PRECHECK_STATUS = "NOT CHECKED"
+        CI_MAIN_BACKEND_PRECHECK_STATUS = "NOT CHECKED" // Status of gogo-main-backend:5001
         DR_TEST_RESULT = "FAILURE" // Default to failure, set to SUCCESS if all logic passes
     }
 
@@ -112,7 +113,6 @@ pipeline {
                         def newImage = "${IMAGE_NAME}:${TAG}"
                         echo "🔧 Updating Kubernetes deployment YAML at ${filePath} to use image: ${newImage}"
                         // Using sed to replace the image line. Ensure your YAML structure matches.
-                        // This assumes the image line looks like '        image: some-old-image:tag'
                         sh "sed -i 's|image:.*|        image: ${newImage}|' ${filePath}"
                         echo "Updated YAML content:"
                         sh "cat ${filePath}"
@@ -156,15 +156,16 @@ pipeline {
             }
         }
 
-        stage('🛡️ DR Failover & Sync Logic') {
+        stage('🛡️ DR Failover & Sync') {
             steps {
                 script {
-                    // --- 0. Pre-check: Ensure CI-Main-Backend (gogo-main-backend:5001) is running and healthy for seeding ---
+                    // --- 0. Pre-check: Ensure CI-Main Backend (gogo-main-backend:5001) is running and healthy for seeding ---
                     // This is the CRITICAL source of truth for the DR backend's data.
                     echo "--- Step 0: Validating CI-Main Backend (gogo-main-backend:5001) health for DR seeding ---"
                     def ciMainBackendHealthCheckAttempts = 5
                     def ciMainBackendHealthWait = 10 // seconds
                     def ciMainBackendReady = false
+                    def ciMainBackendSource = "UNKNOWN" // To store which source was used for seeding
 
                     for (int i = 1; i <= ciMainBackendHealthCheckAttempts; i++) {
                         echo "Attempt ${i}/${ciMainBackendHealthCheckAttempts}: Checking CI-Main Backend (gogo-main-backend:5001)..."
@@ -184,6 +185,7 @@ pipeline {
                             if (ciMainBackendHealthyCheck) {
                                 echo "✅ CI-Main Backend (gogo-main-backend:5001) is running and healthy."
                                 ciMainBackendReady = true
+                                ciMainBackendSource = "http://localhost:5001"
                                 break // Exit loop, backend is ready
                             } else {
                                 echo "⚠️ CI-Main Backend (gogo-main-backend:5001) is running but UNHEALTHY (expected HTTP 200 from /health)."
@@ -200,13 +202,26 @@ pipeline {
 
                     if (!ciMainBackendReady) {
                         env.CI_MAIN_BACKEND_PRECHECK_STATUS = "Failed - Not Healthy/Running"
-                        error "CRITICAL: CI-Main Backend (gogo-main-backend:5001) is not healthy or not running after multiple attempts. Cannot proceed with DR seeding."
+                        echo "⚠️ CI-Main Backend (gogo-main-backend:5001) is not healthy or not running. Attempting to use K8s Backend (5000) as seeding source."
+
+                        // Fallback to K8s Backend (5000) as seed source if 5001 is down
+                        def k8sBackendAsSeedSourceHealthy = sh(
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/health || true",
+                            returnStdout: true
+                        ).trim() == '200'
+
+                        if (k8sBackendAsSeedSourceHealthy) {
+                            ciMainBackendSource = "http://localhost:5000"
+                            echo "✅ K8s Backend (5000) is healthy and will be used as the seeding source for DR Backend (5002)."
+                        } else {
+                            error "CRITICAL: Neither CI-Main Backend (5001) nor K8s Backend (5000) is healthy for DR seeding. Cannot proceed."
+                        }
+                    } else {
+                        env.CI_MAIN_BACKEND_PRECHECK_STATUS = "Healthy and Running"
                     }
-                    env.CI_MAIN_BACKEND_PRECHECK_STATUS = "Healthy and Running"
 
-
-                    // --- 1. Seed DR Backend (gogo-dr-backend:5002) from CI-Main-Backend (5001) ---
-                    echo "--- Step 1: Seeding DR Backend (gogo-dr-backend:5002) from CI-Main Backend (5001) ---"
+                    // --- 1. Launch/Ensure DR Backend (gogo-dr-backend:5002) is running and seeded ---
+                    echo "--- Step 1: Launching/Ensuring DR Backend (gogo-dr-backend:5002) and Seeding ---"
                     echo "Ensuring no old 'gogo-dr-backend' container is running..."
                     sh "docker stop gogo-dr-backend || true" // Stop existing DR backend if any
                     sh "docker rm gogo-dr-backend || true"   // Remove it to ensure a clean run
@@ -221,18 +236,21 @@ pipeline {
                     echo "Waiting 10 seconds for 'gogo-dr-backend' to initialize..."
                     sleep 10 // Give the container time to start up and expose its port
 
-                    echo "🌱 Executing seed.py inside 'gogo-dr-backend' container to sync data from http://localhost:5001 (CI-Main-Backend)..."
+                    echo "🌱 Executing seed.py inside 'gogo-dr-backend' container to sync data from ${ciMainBackendSource}..."
                     // IMPORTANT: The seed.py script inside your DR_BACKEND_IMAGE MUST be configured
-                    // to pull data from http://localhost:5001. This assumes Jenkins agent network setup
-                    // allows gogo-dr-backend to reach 5001 on localhost (which it typically does via host network or bridge with published ports).
+                    // to pull data from the API_URL provided via environment variable or passed as an argument.
+                    // For simplicity, we are passing the URL directly via docker exec here.
+                    // Your seed.py needs to accept this URL as an argument or from an ENV var.
+                    // Example: docker exec gogo-dr-backend python /app/seed.py --source-url ${ciMainBackendSource}
+                    // For this example, let's assume seed.py has the logic to use this.
                     def drBackendSeedSuccess = sh(
-                        script: 'docker exec gogo-dr-backend python /app/seed.py', // Adjust path if seed.py is elsewhere
+                        script: "docker exec gogo-dr-backend python /app/seed.py ${ciMainBackendSource}", // Pass source URL to seed.py
                         returnStatus: true
                     )
 
                     if (drBackendSeedSuccess == 0) {
-                        echo "✅ DR Backend seed.py executed successfully from CI-Main Backend (5001)."
-                        env.DR_DATA_SYNC_STATUS = "DR Backend Seeded Successfully from 5001"
+                        echo "✅ DR Backend seed.py executed successfully using source: ${ciMainBackendSource}."
+                        env.DR_DATA_SYNC_STATUS = "DR Backend Seeded Successfully from ${ciMainBackendSource}"
                         echo "🔍 Performing health check on DR Backend (gogo-dr-backend:5002) after seeding..."
                         def drBackendHealthyAfterSeed = sh(
                             script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5002/health || true",
@@ -241,31 +259,21 @@ pipeline {
 
                         if (drBackendHealthyAfterSeed) {
                             echo "✅ DR Backend (gogo-dr-backend:5002) is healthy after seeding."
-                            // env.DR_BACKEND_STATUS will be set later based on frontend choice
                         } else {
                             echo "❌ DR Backend (gogo-dr-backend:5002) health check failed after seeding (expected HTTP 200)."
                             env.DR_BACKEND_STATUS = "DR Backend Seeded but Health Check Failed (5002)"
                             error "Critical: DR Backend failed health check after seeding. Pipeline halted."
                         }
                     } else {
-                        echo "❌ DR Backend seed.py failed or could not connect to CI-Main Backend (5001)."
-                        env.DR_DATA_SYNC_STATUS = "DR Backend Seed Failed from 5001"
-                        error "CRITICAL: DR Backend data seeding failed from CI-Main Backend (5001). Pipeline halted."
+                        echo "❌ DR Backend seed.py failed or could not connect to data source: ${ciMainBackendSource}."
+                        env.DR_DATA_SYNC_STATUS = "DR Backend Seed Failed from ${ciMainBackendSource}"
+                        error "CRITICAL: DR Backend data seeding failed. Pipeline halted."
                     }
-
 
                     // --- 2. Determine Frontend API URL (K8s-Backend 5000 preferred, else DR-Backend 5002) ---
                     def frontendApiUrl
                     echo "--- Step 2: Determining Frontend API URL ---"
                     echo "🔍 Checking health of K8s Backend (http://localhost:5000/health)..."
-                    // Note: Your original K8s backend health check was 'http://gogo-backend:5000/health'.
-                    // For a Jenkins agent to reach it directly, it needs to be exposed on localhost,
-                    // typically via kubectl port-forward or if Jenkins is running in the K8s cluster.
-                    // Assuming for now, 'localhost:5000' is the access point from the Jenkins agent.
-                    // If your K8s backend is truly accessed only via its internal K8s service name
-                    // and Jenkins is *not* in the cluster or port-forwarding, this curl will fail.
-                    // You might need 'kubectl exec' or a K8s client in Jenkins for proper K8s checks.
-                    // For the sake of completing the logic as per your structure, I'll stick with localhost for direct curl.
                     def k8sBackendIsHealthy = sh(
                         script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/health || true",
                         returnStdout: true
