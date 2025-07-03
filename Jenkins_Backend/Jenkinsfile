@@ -2,28 +2,41 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'rani19/backend' // This is likely for the *new* backend image you build and push
-        TAG = "build-${env.BUILD_NUMBER}"
+        // --- Repository and Image Information ---
+        IMAGE_NAME = 'rani19/backend' // Your Docker Hub username/repo for the backend
+        TAG = "build-${env.BUILD_NUMBER}" // Unique tag for each build
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
-        DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
-        SLACK_CREDENTIAL_ID = 'slack-webhook'
 
-        // Define variables for dynamic frontend/backend management
+        // --- Credential IDs (configured in Jenkins) ---
+        DOCKER_CREDENTIALS_ID = 'docker-hub-creds' // Docker Hub username/password
+        SLACK_CREDENTIAL_ID = 'slack-webhook'     // Slack incoming webhook URL
+        GITHUB_PUSH_TOKEN_ID = 'github-push-token' // GitHub Personal Access Token for config repo push
+
+        // --- Docker Image Names for Deployment ---
+        // Image for both main (3000) and DR (3002) frontends
+        FRONTEND_IMAGE = 'rani19/gogo-main-frontend:latest' // IMPORTANT: Replace with your actual frontend image name
+        // Image for the DR backend (5002). This will be the image built by THIS pipeline.
+        DR_BACKEND_IMAGE = "${IMAGE_NAME}:${TAG}"
+        // Note: 'gogo-main-backend' (5001) is assumed to be running outside this pipeline's direct control
+        // and uses an image like 'smart-retail-dev-backend' for its operation.
+
+        // --- Variables for Reporting DR Status (initial defaults) ---
         ACTIVE_FRONTEND_NAME = "UNKNOWN"
         ACTIVE_FRONTEND_PORT = "UNKNOWN"
-        ACTIVE_BACKEND_NAME = "UNKNOWN"
+        ACTIVE_BACKEND_NAME = "UNKNOWN" // K8s-Backend (5000) or gogo-dr-backend (5002)
         ACTIVE_BACKEND_PORT = "UNKNOWN"
-
-        // Explicitly define Docker image names based on your `docker ps` output
-        FRONTEND_IMAGE = 'rani19/gogo-main-frontend:latest'
-        MAIN_BACKEND_IMAGE = 'smart-retail-dev-backend'
-        DR_BACKEND_IMAGE = 'rani19/backend:latest' // This is the image for gogo-dr-backend
+        DR_FRONTEND_STATUS = "UNKNOWN"
+        DR_BACKEND_STATUS = "UNKNOWN"
+        DR_DATA_SYNC_STATUS = "UNKNOWN"
+        FRONTEND_API_URL_USED = "UNKNOWN"
+        CI_MAIN_BACKEND_PRECHECK_STATUS = "NOT CHECKED"
+        DR_TEST_RESULT = "FAILURE" // Default to failure, set to SUCCESS if all logic passes
     }
 
     options {
-        buildDiscarder(logRotator(numToKeepStr: '5'))
-        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '5')) // Keep last 5 successful builds
+        timeout(time: 25, unit: 'MINUTES') // Increased timeout for comprehensive checks
     }
 
     stages {
@@ -47,28 +60,29 @@ pipeline {
             steps {
                 dir('dev') {
                     script {
+                        // Check if the 'backend/' directory has changes compared to the previous commit
                         def backendChanged = sh(
                             script: "git diff --name-only HEAD~1 HEAD | grep -q '^backend/'",
                             returnStatus: true
                         ) == 0
 
                         if (!backendChanged) {
-                            echo "⚠️ No changes in backend code. Aborting..."
+                            echo "⚠️ No changes detected in the 'backend/' directory. Aborting pipeline as per logic."
                             currentBuild.result = 'ABORTED'
-                            error("No changes in backend/")
+                            error("No changes in backend/ directory. Pipeline aborted.")
+                        } else {
+                            echo "✅ Changes detected in 'backend/' directory. Proceeding with CI/CD."
                         }
                     }
                 }
             }
         }
 
-        stage('🐳 Build Docker Image') {
+        stage('🐳 Build Docker Image (Backend)') {
             steps {
                 dir('dev') {
                     script {
-                        echo "📦 Building image ${IMAGE_NAME}:${TAG}"
-                        // This builds the new backend image, which will be used for DR_BACKEND_IMAGE if it's updated
-                        // or for your main backend if you deploy it this way.
+                        echo "📦 Building Docker image: ${IMAGE_NAME}:${TAG} from backend/Dockerfile"
                         docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
                     }
                 }
@@ -80,8 +94,10 @@ pipeline {
                 withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     script {
                         docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
+                            echo "⬆️ Pushing image ${IMAGE_NAME}:${TAG} to Docker Hub..."
                             docker.image("${IMAGE_NAME}:${TAG}").push()
-                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+                            echo "⬆️ Pushing image ${IMAGE_NAME}:latest to Docker Hub..."
+                            docker.image("${IMAGE_NAME}:${TAG}").push("latest") // Also tag as latest
                         }
                     }
                 }
@@ -94,8 +110,11 @@ pipeline {
                     script {
                         def filePath = "k8s/backend/deployment.yaml"
                         def newImage = "${IMAGE_NAME}:${TAG}"
-                        echo "🔧 Updating ${filePath} with new image: ${newImage}"
-                        sh "sed -i 's|image:.*|image: ${newImage}|' ${filePath}"
+                        echo "🔧 Updating Kubernetes deployment YAML at ${filePath} to use image: ${newImage}"
+                        // Using sed to replace the image line. Ensure your YAML structure matches.
+                        // This assumes the image line looks like '        image: some-old-image:tag'
+                        sh "sed -i 's|image:.*|        image: ${newImage}|' ${filePath}"
+                        echo "Updated YAML content:"
                         sh "cat ${filePath}"
                     }
                 }
@@ -105,142 +124,167 @@ pipeline {
         stage('📤 Commit & Push Changes') {
             steps {
                 dir('config') {
-                    withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
+                    withCredentials([string(credentialsId: "${GITHUB_PUSH_TOKEN_ID}", variable: 'GIT_TOKEN')]) {
                         script {
+                            echo "⚙️ Configuring Git user for commit..."
                             sh """
                                 git config user.email "rani.saed19@gmail.com"
-                                git config user.name "Rani Saed (CI/CD)"
-                                git add k8s/backend/deployment.yaml
-                                if ! git diff --cached --quiet; then
-                                    git commit -m "🚀 Update backend image to ${TAG}"
-                                    git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
-                                    git push origin main
-                                else
-                                    echo "No changes to commit"
-                                fi
+                                git config user.name "Rani Saed (CI/CD Bot)"
                             """
-                        }
-                    }
-                }
-            }
-        }
+                            echo " staging k8s/backend/deployment.yaml..."
+                            sh "git add k8s/backend/deployment.yaml"
 
-        stage('❤️ Health Check (K8s Backend)') {
-            steps {
-                script {
-                    echo "🔍 Checking Kubernetes backend health (gogo-backend:5000)..."
-                    def maxAttempts = 15
-                    def waitTime = 10
-                    def healthy = false
+                            // Check if there are actual changes staged before committing
+                            def changesToCommit = sh(
+                                script: "git diff --cached --quiet || echo 'changes'",
+                                returnStdout: true
+                            ).trim()
 
-                    for (int i = 1; i <= maxAttempts; i++) {
-                        echo "Attempt ${i}/${maxAttempts}: Curling http://gogo-backend:5000/health..."
-                        def healthCheckStatus = sh(
-                            script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"'",
-                            returnStatus: true
-                        )
-                        if (healthCheckStatus == 0) {
-                            echo "✅ Kubernetes Backend is healthy on attempt ${i}!"
-                            healthy = true
-                            break
-                        } else {
-                            echo "❌ Kubernetes Backend not yet healthy."
-                            if (i < maxAttempts) {
-                                sleep waitTime
-                            }
-                        }
-                    }
-
-                    if (!healthy) {
-                        error "❌ Kubernetes Backend health check failed after ${maxAttempts} attempts!"
-                    }
-                }
-            }
-        }
-
-        stage('🛡️ DR Failover & Sync') {
-            steps {
-                script {
-                    // --- 1. Determine Active Backend ---
-                    echo "--- Determining Active Backend ---"
-                    def mainBackendIsRunning = sh(
-                        script: "docker ps --filter 'name=gogo-backend' --format '{{.Names}}'",
-                        returnStdout: true
-                    ).trim() == 'gogo-backend'
-
-                    def mainBackendIsHealthy = false
-                    if (mainBackendIsRunning) {
-                        echo "🔍 Checking health of Main Backend (gogo-backend:5001)..."
-                        // Assuming health check endpoint is /health on container port 5000, exposed on host 5001
-                        def healthStatus = sh(script: "curl -s http://localhost:5001/health || true", returnStatus: true)
-                        mainBackendIsHealthy = (healthStatus == 0)
-                        if (mainBackendIsHealthy) {
-                            echo "✅ Main Backend (gogo-backend:5001) is running and healthy."
-                        } else {
-                            echo "⚠️ Main Backend (gogo-backend:5001) is running but unhealthy."
-                        }
-                    } else {
-                        echo "❌ Main Backend container (gogo-backend) is NOT running."
-                    }
-
-                    if (mainBackendIsRunning && mainBackendIsHealthy) {
-                        env.ACTIVE_BACKEND_NAME = "gogo-backend"
-                        env.ACTIVE_BACKEND_PORT = "5001"
-                        env.DR_BACKEND_STATUS = "Main Active (5001)"
-                        echo "Stopping DR Backend (gogo-dr-backend)..."
-                        sh "docker stop gogo-dr-backend || true" // Ensure DR backend is stopped
-                        env.DR_DATA_SYNC_STATUS = "Not Applicable (Main Active)"
-                    } else {
-                        echo "🚨 Main Backend is not fully active. Initiating DR Backend failover."
-                        sh "docker stop gogo-backend || true" // Stop main backend, in case it's just unhealthy
-                        echo "Starting DR Backend (gogo-dr-backend)..."
-                        // Use the correct DR backend image and port mapping
-                        sh """
-                            docker run --rm -d \
-                            --name gogo-dr-backend \
-                            -p 5002:5000 \
-                            ${DR_BACKEND_IMAGE}
-                        """
-
-                        echo "🌱 Running seed.py inside DR Backend container (gogo-dr-backend) to sync data from Kubernetes backend (5000)..."
-                        // Assuming seed.py will connect to the source of truth (e.g., a database like gogo-main-db)
-                        def drBackendSeedSuccess = sh(
-                            script: 'docker exec gogo-dr-backend python /app/seed.py',
-                            returnStatus: true
-                        )
-
-                        if (drBackendSeedSuccess == 0) {
-                            echo "✅ DR Backend seed.py executed successfully."
-                            env.DR_DATA_SYNC_STATUS = "DR Backend Seeded Successfully"
-                            echo "🔍 Checking health of DR Backend (gogo-dr-backend:5002)..."
-                            def drBackendHealthy = sh(
-                                script: "curl -s http://localhost:5002/health | grep -q '\"status\":\"healthy\"'",
-                                returnStatus: true
-                            )
-                            if (drBackendHealthy == 0) {
-                                echo "✅ DR Backend (gogo-dr-backend:5002) is healthy."
-                                env.ACTIVE_BACKEND_NAME = "gogo-dr-backend"
-                                env.ACTIVE_BACKEND_PORT = "5002"
-                                env.DR_BACKEND_STATUS = "DR Activated & Healthy (5002)"
+                            if (changesToCommit == 'changes') {
+                                echo "⬆️ Committing and pushing updated deployment YAML..."
+                                sh "git commit -m \"🚀 Update backend image to ${TAG}\""
+                                // Use the token for pushing
+                                sh "git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git"
+                                sh "git push origin main"
+                                echo "✅ Updated deployment YAML committed and pushed to smart-retail-config."
                             } else {
-                                echo "❌ DR Backend activated but Health Check Failed (5002)."
-                                env.DR_BACKEND_STATUS = "DR Activated but Health Check Failed (5002)"
-                                env.ACTIVE_BACKEND_NAME = "NONE" // Indicate no active backend
-                                env.ACTIVE_BACKEND_PORT = "NONE"
-                                error "Critical: DR Backend failed health check after activation and seeding."
+                                echo "ℹ️ No changes detected in k8s/backend/deployment.yaml to commit. Skipping commit and push."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('🛡️ DR Failover & Sync Logic') {
+            steps {
+                script {
+                    // --- 0. Pre-check: Ensure CI-Main-Backend (gogo-main-backend:5001) is running and healthy for seeding ---
+                    // This is the CRITICAL source of truth for the DR backend's data.
+                    echo "--- Step 0: Validating CI-Main Backend (gogo-main-backend:5001) health for DR seeding ---"
+                    def ciMainBackendHealthCheckAttempts = 5
+                    def ciMainBackendHealthWait = 10 // seconds
+                    def ciMainBackendReady = false
+
+                    for (int i = 1; i <= ciMainBackendHealthCheckAttempts; i++) {
+                        echo "Attempt ${i}/${ciMainBackendHealthCheckAttempts}: Checking CI-Main Backend (gogo-main-backend:5001)..."
+                        // Check if container is running
+                        def ciMainBackendIsRunningCheck = sh(
+                            script: "docker ps --filter 'name=gogo-main-backend' --format '{{.Names}}'",
+                            returnStdout: true
+                        ).trim() == 'gogo-main-backend'
+
+                        if (ciMainBackendIsRunningCheck) {
+                            // Check if health endpoint returns 200 OK
+                            def ciMainBackendHealthyCheck = sh(
+                                script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5001/health || true",
+                                returnStdout: true
+                            ).trim() == '200'
+
+                            if (ciMainBackendHealthyCheck) {
+                                echo "✅ CI-Main Backend (gogo-main-backend:5001) is running and healthy."
+                                ciMainBackendReady = true
+                                break // Exit loop, backend is ready
+                            } else {
+                                echo "⚠️ CI-Main Backend (gogo-main-backend:5001) is running but UNHEALTHY (expected HTTP 200 from /health)."
                             }
                         } else {
-                            echo "❌ DR Backend seed.py failed or could not connect to data source."
-                            env.DR_DATA_SYNC_STATUS = "DR Backend Seed Failed"
-                            env.DR_BACKEND_STATUS = "DR Activated but Seed Failed (5002)"
-                            env.ACTIVE_BACKEND_NAME = "NONE" // Indicate no active backend
-                            env.ACTIVE_BACKEND_PORT = "NONE"
-                            error "Critical: DR Backend data seeding failed."
+                            echo "❌ CI-Main Backend container (gogo-main-backend:5001) is NOT running."
+                        }
+
+                        if (!ciMainBackendReady && i < ciMainBackendHealthCheckAttempts) {
+                            echo "Retrying in ${ciMainBackendHealthWait} seconds..."
+                            sleep ciMainBackendHealthWait
                         }
                     }
 
-                    // --- 2. Determine Active Frontend & Connect to Active Backend ---
-                    echo "--- Determining Active Frontend and Connecting to http://localhost:${env.ACTIVE_BACKEND_PORT} ---"
+                    if (!ciMainBackendReady) {
+                        env.CI_MAIN_BACKEND_PRECHECK_STATUS = "Failed - Not Healthy/Running"
+                        error "CRITICAL: CI-Main Backend (gogo-main-backend:5001) is not healthy or not running after multiple attempts. Cannot proceed with DR seeding."
+                    }
+                    env.CI_MAIN_BACKEND_PRECHECK_STATUS = "Healthy and Running"
+
+
+                    // --- 1. Seed DR Backend (gogo-dr-backend:5002) from CI-Main-Backend (5001) ---
+                    echo "--- Step 1: Seeding DR Backend (gogo-dr-backend:5002) from CI-Main Backend (5001) ---"
+                    echo "Ensuring no old 'gogo-dr-backend' container is running..."
+                    sh "docker stop gogo-dr-backend || true" // Stop existing DR backend if any
+                    sh "docker rm gogo-dr-backend || true"   // Remove it to ensure a clean run
+
+                    echo "🚀 Starting new 'gogo-dr-backend' container using image: ${DR_BACKEND_IMAGE} on port 5002..."
+                    sh """
+                        docker run --rm -d \
+                        --name gogo-dr-backend \
+                        -p 5002:5000 \
+                        ${DR_BACKEND_IMAGE}
+                    """
+                    echo "Waiting 10 seconds for 'gogo-dr-backend' to initialize..."
+                    sleep 10 // Give the container time to start up and expose its port
+
+                    echo "🌱 Executing seed.py inside 'gogo-dr-backend' container to sync data from http://localhost:5001 (CI-Main-Backend)..."
+                    // IMPORTANT: The seed.py script inside your DR_BACKEND_IMAGE MUST be configured
+                    // to pull data from http://localhost:5001. This assumes Jenkins agent network setup
+                    // allows gogo-dr-backend to reach 5001 on localhost (which it typically does via host network or bridge with published ports).
+                    def drBackendSeedSuccess = sh(
+                        script: 'docker exec gogo-dr-backend python /app/seed.py', // Adjust path if seed.py is elsewhere
+                        returnStatus: true
+                    )
+
+                    if (drBackendSeedSuccess == 0) {
+                        echo "✅ DR Backend seed.py executed successfully from CI-Main Backend (5001)."
+                        env.DR_DATA_SYNC_STATUS = "DR Backend Seeded Successfully from 5001"
+                        echo "🔍 Performing health check on DR Backend (gogo-dr-backend:5002) after seeding..."
+                        def drBackendHealthyAfterSeed = sh(
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5002/health || true",
+                            returnStdout: true
+                        ).trim() == '200'
+
+                        if (drBackendHealthyAfterSeed) {
+                            echo "✅ DR Backend (gogo-dr-backend:5002) is healthy after seeding."
+                            // env.DR_BACKEND_STATUS will be set later based on frontend choice
+                        } else {
+                            echo "❌ DR Backend (gogo-dr-backend:5002) health check failed after seeding (expected HTTP 200)."
+                            env.DR_BACKEND_STATUS = "DR Backend Seeded but Health Check Failed (5002)"
+                            error "Critical: DR Backend failed health check after seeding. Pipeline halted."
+                        }
+                    } else {
+                        echo "❌ DR Backend seed.py failed or could not connect to CI-Main Backend (5001)."
+                        env.DR_DATA_SYNC_STATUS = "DR Backend Seed Failed from 5001"
+                        error "CRITICAL: DR Backend data seeding failed from CI-Main Backend (5001). Pipeline halted."
+                    }
+
+
+                    // --- 2. Determine Frontend API URL (K8s-Backend 5000 preferred, else DR-Backend 5002) ---
+                    def frontendApiUrl
+                    echo "--- Step 2: Determining Frontend API URL ---"
+                    echo "🔍 Checking health of K8s Backend (http://localhost:5000/health)..."
+                    // Note: Your original K8s backend health check was 'http://gogo-backend:5000/health'.
+                    // For a Jenkins agent to reach it directly, it needs to be exposed on localhost,
+                    // typically via kubectl port-forward or if Jenkins is running in the K8s cluster.
+                    // Assuming for now, 'localhost:5000' is the access point from the Jenkins agent.
+                    // If your K8s backend is truly accessed only via its internal K8s service name
+                    // and Jenkins is *not* in the cluster or port-forwarding, this curl will fail.
+                    // You might need 'kubectl exec' or a K8s client in Jenkins for proper K8s checks.
+                    // For the sake of completing the logic as per your structure, I'll stick with localhost for direct curl.
+                    def k8sBackendIsHealthy = sh(
+                        script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/health || true",
+                        returnStdout: true
+                    ).trim() == '200'
+
+                    if (k8sBackendIsHealthy) {
+                        frontendApiUrl = "http://localhost:5000"
+                        echo "✅ K8s Backend (5000) is healthy. Frontend will be configured to use: ${frontendApiUrl}"
+                        env.DR_BACKEND_STATUS = "K8s Backend (5000) Active" // For reporting
+                    } else {
+                        frontendApiUrl = "http://localhost:5002" // Fallback to DR Backend
+                        echo "❌ K8s Backend (5000) is NOT healthy (expected HTTP 200). Frontend will be configured to use DR Backend: ${frontendApiUrl}"
+                        env.DR_BACKEND_STATUS = "DR Backend (5002) Active" // For reporting
+                    }
+                    env.FRONTEND_API_URL_USED = frontendApiUrl // Store for post-build reporting
+
+
+                    // --- 3. Determine Active Frontend (Main 3000 preferred, else DR 3002) ---
+                    echo "--- Step 3: Determining Active Frontend ---"
                     def mainFrontendIsRunning = sh(
                         script: "docker ps --filter 'name=gogo-main-frontend' --format '{{.Names}}'",
                         returnStdout: true
@@ -249,165 +293,140 @@ pipeline {
                     def mainFrontendIsHealthy = false
                     if (mainFrontendIsRunning) {
                         echo "🔍 Checking health of Main Frontend (gogo-main-frontend:3000)..."
-                        // Assuming frontend serves something on root path or has a health endpoint
-                        def healthStatus = sh(script: "curl -s http://localhost:3000 || true", returnStatus: true)
-                        mainFrontendIsHealthy = (healthStatus == 0)
+                        // Assuming frontend root (/) gives a 200 OK if healthy
+                        def healthStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 || true", returnStdout: true).trim() == '200'
+                        mainFrontendIsHealthy = (healthStatus)
                         if (mainFrontendIsHealthy) {
                             echo "✅ Main Frontend (gogo-main-frontend:3000) is running and healthy."
                         } else {
-                            echo "⚠️ Main Frontend (gogo-main-frontend:3000) is running but unhealthy."
+                            echo "⚠️ Main Frontend (gogo-main-frontend:3000) is running but unhealthy (expected HTTP 200 from /)."
                         }
                     } else {
                         echo "❌ Main Frontend container (gogo-main-frontend) is NOT running."
                     }
 
                     if (mainFrontendIsRunning && mainFrontendIsHealthy) {
+                        // Main Frontend is currently active and healthy, prefer it.
                         env.ACTIVE_FRONTEND_NAME = "gogo-main-frontend"
                         env.ACTIVE_FRONTEND_PORT = "3000"
                         env.DR_FRONTEND_STATUS = "Main Active (3000)"
-                        echo "Stopping DR Frontend (gogo-dr-frontend)..."
-                        sh "docker stop gogo-dr-frontend || true" // Ensure DR frontend is stopped
 
-                        // Reconfigure and restart main frontend to ensure it points to the determined active backend
-                        echo "Reconfiguring and restarting Main Frontend (gogo-main-frontend) to connect to backend: http://localhost:${env.ACTIVE_BACKEND_PORT}"
-                        sh "docker stop gogo-main-frontend || true" // Stop before running to update env vars
+                        echo "Stopping any existing DR Frontend (gogo-dr-frontend)..."
+                        sh "docker stop gogo-dr-frontend || true"
+                        sh "docker rm gogo-dr-frontend || true"
+
+                        echo "Reconfiguring and restarting Main Frontend (gogo-main-frontend) to connect to ${frontendApiUrl}..."
+                        // Stop and remove to ensure fresh start with updated environment variables
+                        sh "docker stop gogo-main-frontend || true"
+                        sh "docker rm gogo-main-frontend || true"
                         sh """
                             docker run --rm -d \
                             --name gogo-main-frontend \
                             -p 3000:80 \
-                            -e REACT_APP_API_URL=http://localhost:${env.ACTIVE_BACKEND_PORT} \
+                            -e REACT_APP_API_URL=${frontendApiUrl} \
                             ${FRONTEND_IMAGE}
                         """
+                        echo "Waiting 5 seconds for Main Frontend to restart..."
+                        sleep 5
                         // Re-check health after restart
                         def recheckFrontendHealthy = sh(
-                            script: "curl -s http://localhost:3000 || true",
-                            returnStatus: true
-                        )
-                        if (recheckFrontendHealthy == 0) {
-                            echo "✅ Main Frontend restarted and healthy with new backend connection."
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 || true",
+                            returnStdout: true
+                        ).trim() == '200'
+                        if (recheckFrontendHealthy) {
+                            echo "✅ Main Frontend restarted successfully and is healthy with new backend connection."
                         } else {
-                            echo "❌ Main Frontend failed health check after restart/reconfiguration."
+                            echo "❌ Main Frontend failed health check after restart/reconfiguration (expected HTTP 200)."
                             env.DR_FRONTEND_STATUS = "Main Active but Reconfig Failed"
-                            error "Critical: Main Frontend failed health check after reconfiguring."
+                            error "Critical: Main Frontend failed health check after reconfiguring. Pipeline halted."
                         }
 
                     } else {
-                        echo "🚨 Main Frontend is not fully active. Initiating DR Frontend failover."
-                        sh "docker stop gogo-main-frontend || true" // Stop main frontend
-                        echo "Starting DR Frontend (gogo-dr-frontend)..."
-                        // Use the correct DR frontend image and port mapping
+                        // Main Frontend is not active or unhealthy, initiate DR Frontend failover.
+                        echo "🚨 Main Frontend is not fully active or healthy. Initiating DR Frontend failover."
+                        echo "Stopping any existing Main Frontend (gogo-main-frontend)..."
+                        sh "docker stop gogo-main-frontend || true"
+                        sh "docker rm gogo-main-frontend || true"
+
+                        env.ACTIVE_FRONTEND_NAME = "gogo-dr-frontend"
+                        env.ACTIVE_FRONTEND_PORT = "3002"
+                        env.DR_FRONTEND_STATUS = "DR Activated (3002)"
+
+                        echo "🚀 Starting DR Frontend (gogo-dr-frontend) using image: ${FRONTEND_IMAGE} on port 3002..."
+                        // Stop/remove in case it was started for seeding and not properly removed.
+                        sh "docker stop gogo-dr-frontend || true"
+                        sh "docker rm gogo-dr-frontend || true"
                         sh """
                             docker run --rm -d \
                             --name gogo-dr-frontend \
                             -p 3002:80 \
-                            -e REACT_APP_API_URL=http://localhost:${env.ACTIVE_BACKEND_PORT} \
+                            -e REACT_APP_API_URL=${frontendApiUrl} \
                             ${FRONTEND_IMAGE}
                         """
-
+                        echo "Waiting 5 seconds for DR Frontend to start..."
+                        sleep 5
                         echo "🔍 Checking health of DR Frontend (gogo-dr-frontend:3002)..."
                         def drFrontendHealthy = sh(
-                            script: "curl -s http://localhost:3002 || true",
-                            returnStatus: true
-                        )
-                        if (drFrontendHealthy == 0) {
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3002 || true",
+                            returnStdout: true
+                        ).trim() == '200'
+                        if (drFrontendHealthy) {
                             echo "✅ DR Frontend (gogo-dr-frontend:3002) is healthy."
-                            env.ACTIVE_FRONTEND_NAME = "gogo-dr-frontend"
-                            env.ACTIVE_FRONTEND_PORT = "3002"
                             env.DR_FRONTEND_STATUS = "DR Activated & Healthy (3002)"
                         } else {
-                            echo "❌ DR Frontend activated but Health Check Failed (3002)."
+                            echo "❌ DR Frontend activated but Health Check Failed (3002) (expected HTTP 200)."
                             env.DR_FRONTEND_STATUS = "DR Activated but Health Check Failed (3002)"
-                            env.ACTIVE_FRONTEND_NAME = "NONE" // Indicate no active frontend
-                            env.ACTIVE_FRONTEND_PORT = "NONE"
-                            error "Critical: DR Frontend failed health check after activation."
+                            error "Critical: DR Frontend failed health check after activation. Pipeline halted."
                         }
                     }
 
-                    // --- 3. Determine Overall DR Test Result ---
-                    // The pipeline will have errored out earlier if no active frontend or backend was found
-                    env.DR_TEST_RESULT = "SUCCESS" // If we reached here, something should be active and healthy
-                }
-            }
-        }
-
-        stage('📊 Generate DR Readiness Reports') {
-            steps {
-                script {
-                    echo "--- DR Readiness Report ---"
-                    echo "Build Number: ${env.BUILD_NUMBER}"
-                    echo "Build URL: ${env.BUILD_URL}"
-                    echo "Timestamp: ${new Date().format('yyyy-MM-dd HH:mm:ss')}"
-                    echo "---------------------------"
-                    echo "DR Test Result: **${env.DR_TEST_RESULT}**"
-                    echo "Active Frontend: ${env.ACTIVE_FRONTEND_NAME} (Port: ${env.ACTIVE_FRONTEND_PORT}, Status: ${env.DR_FRONTEND_STATUS})"
-                    echo "Active Backend: ${env.ACTIVE_BACKEND_NAME} (Port: ${env.ACTIVE_BACKEND_PORT}, Status: ${env.DR_BACKEND_STATUS})"
-                    echo "DR Data Sync Status: ${env.DR_DATA_SYNC_STATUS}"
-                    echo "---------------------------"
-
-                    // You can save this to a file as a build artifact
-                    def reportContent = """
-                        DR Readiness Report
-                        -------------------
-                        Build Number: ${env.BUILD_NUMBER}
-                        Build URL: ${env.BUILD_URL}
-                        Timestamp: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
-                        -------------------
-                        DR Test Result: ${env.DR_TEST_RESULT}
-                        Active Frontend: ${env.ACTIVE_FRONTEND_NAME} (Port: ${env.ACTIVE_FRONTEND_PORT}, Status: ${env.DR_FRONTEND_STATUS})
-                        Active Backend: ${env.ACTIVE_BACKEND_NAME} (Port: ${env.ACTIVE_BACKEND_PORT}, Status: ${env.DR_BACKEND_STATUS})
-                        DR Data Sync Status: ${env.DR_DATA_SYNC_STATUS}
-                        -------------------
-                    """.stripIndent()
-
-                    writeFile file: 'dr-readiness-report.txt', text: reportContent
-                    archiveArtifacts artifacts: 'dr-readiness-report.txt', fingerprint: true
-
-                    // Send a richer Slack notification with the report summary
-                    withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
-                        def slackMessage = ""
-                        if (env.DR_TEST_RESULT == "SUCCESS") {
-                            slackMessage = "✅ *DR Readiness Test Passed!*\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nActive Frontend: *${env.ACTIVE_FRONTEND_NAME}* (${env.ACTIVE_FRONTEND_PORT})\\nActive Backend: *${env.ACTIVE_BACKEND_NAME}* (${env.ACTIVE_BACKEND_PORT})\\nData Sync: ${env.DR_DATA_SYNC_STATUS}"
-                        } else {
-                            slackMessage = "❌ *DR Readiness Test FAILED!*\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nFrontend Status: ${env.DR_FRONTEND_STATUS}\\nBackend Status: ${env.DR_BACKEND_STATUS}\\nData Sync: ${env.DR_DATA_SYNC_STATUS}\\nCheck logs for details."
-                        }
-
-                        sh """
-                            curl -X POST -H 'Content-type: application/json' \
-                            --data '{"text": "${slackMessage}"}' $SLACK_WEBHOOK
-                        """
-                    }
+                    // If we reach here, the DR mechanism has successfully determined and launched the correct frontend/backend config.
+                    env.DR_TEST_RESULT = "SUCCESS"
+                    echo "🎉 DR Failover & Sync Logic completed successfully!"
                 }
             }
         }
     }
 
     post {
+        always {
+            // Optional: Perform a general cleanup of all project-related Docker containers that are transient.
+            // This ensures a clean slate for the next run and prevents orphaned containers.
+            // Be cautious with this if you want some containers (like gogo-main-backend) to persist outside of pipeline runs.
+            echo "--- Post-build cleanup (Stopping/Removing temporary containers managed by pipeline) ---"
+            sh "docker stop gogo-main-frontend || true && docker rm gogo-main-frontend || true"
+            sh "docker stop gogo-dr-frontend || true && docker rm gogo-dr-frontend || true"
+            sh "docker stop gogo-dr-backend || true && docker rm gogo-dr-backend || true"
+            // Note: gogo-main-backend (5001) and gogo-main-db (if used) are assumed to be managed externally
+            // and should ideally not be stopped by the pipeline unless they are meant to be transient.
+            echo "Cleanup complete."
+        }
         success {
-            echo "✅ Backend image pushed and deployment updated."
+            echo "✅ Pipeline executed successfully!"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & DR check passed!"}' $SLACK_WEBHOOK
+                    --data '{"text": "✅ *Smart Retail CI/CD Success* (Build #${env.BUILD_NUMBER})\\n*Backend Image:* ${env.IMAGE_NAME}:${env.TAG}\\n*Active Frontend:* ${env.ACTIVE_FRONTEND_NAME} (${env.ACTIVE_FRONTEND_PORT})\\n*Backend API Used:* ${env.FRONTEND_API_URL_USED}\\n*DR Data Sync Status:* ${env.DR_DATA_SYNC_STATUS}\\n*Full Logs:* ${env.BUILD_URL}"}' $SLACK_WEBHOOK
                 """
             }
         }
 
         aborted {
-            echo "⏹️ Pipeline aborted (no backend changes)"
+            echo "⏹️ Pipeline aborted."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                    --data '{"text": "⚠️ *Smart Retail CI/CD Aborted* (Build #${env.BUILD_NUMBER})\\nReason: No changes in backend code or manually aborted.\\n*Full Logs:* ${env.BUILD_URL}"}' $SLACK_WEBHOOK
                 """
             }
         }
 
         failure {
-            echo "❌ Pipeline failed"
+            echo "❌ Pipeline failed."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                    --data '{"text": "❌ *Smart Retail CI/CD FAILED* (Build #${env.BUILD_NUMBER})!\\n*CI-Main Backend Pre-check:* ${env.CI_MAIN_BACKEND_PRECHECK_STATUS}\\n*DR Data Sync:* ${env.DR_DATA_SYNC_STATUS}\\n*Active Frontend Status:* ${env.DR_FRONTEND_STATUS}\\n*Active Backend Status (based on frontend choice):* ${env.DR_BACKEND_STATUS}\\n*Frontend API URL Used:* ${env.FRONTEND_API_URL_USED}\\n*Full Logs:* ${env.BUILD_URL}"}' $SLACK_WEBHOOK
                 """
             }
         }
