@@ -2,17 +2,23 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'rani19/backend'
+        IMAGE_NAME = 'rani19/backend' // This is likely for the *new* backend image you build and push
         TAG = "build-${env.BUILD_NUMBER}"
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
         SLACK_CREDENTIAL_ID = 'slack-webhook'
-        // Define default backend service names/ports. These will be updated dynamically.
+
+        // Define variables for dynamic frontend/backend management
         ACTIVE_FRONTEND_NAME = "UNKNOWN"
         ACTIVE_FRONTEND_PORT = "UNKNOWN"
         ACTIVE_BACKEND_NAME = "UNKNOWN"
         ACTIVE_BACKEND_PORT = "UNKNOWN"
+
+        // Explicitly define Docker image names based on your `docker ps` output
+        FRONTEND_IMAGE = 'rani19/gogo-main-frontend:latest'
+        MAIN_BACKEND_IMAGE = 'smart-retail-dev-backend'
+        DR_BACKEND_IMAGE = 'rani19/backend:latest' // This is the image for gogo-dr-backend
     }
 
     options {
@@ -61,6 +67,8 @@ pipeline {
                 dir('dev') {
                     script {
                         echo "📦 Building image ${IMAGE_NAME}:${TAG}"
+                        // This builds the new backend image, which will be used for DR_BACKEND_IMAGE if it's updated
+                        // or for your main backend if you deploy it this way.
                         docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
                     }
                 }
@@ -163,6 +171,7 @@ pipeline {
                     def mainBackendIsHealthy = false
                     if (mainBackendIsRunning) {
                         echo "🔍 Checking health of Main Backend (gogo-backend:5001)..."
+                        // Assuming health check endpoint is /health on container port 5000, exposed on host 5001
                         def healthStatus = sh(script: "curl -s http://localhost:5001/health || true", returnStatus: true)
                         mainBackendIsHealthy = (healthStatus == 0)
                         if (mainBackendIsHealthy) {
@@ -185,10 +194,16 @@ pipeline {
                         echo "🚨 Main Backend is not fully active. Initiating DR Backend failover."
                         sh "docker stop gogo-backend || true" // Stop main backend, in case it's just unhealthy
                         echo "Starting DR Backend (gogo-dr-backend)..."
-                        sh "docker start gogo-dr-backend" // Expect this to succeed, no || true
+                        // Use the correct DR backend image and port mapping
+                        sh """
+                            docker run --rm -d \
+                            --name gogo-dr-backend \
+                            -p 5002:5000 \
+                            ${DR_BACKEND_IMAGE}
+                        """
 
                         echo "🌱 Running seed.py inside DR Backend container (gogo-dr-backend) to sync data from Kubernetes backend (5000)..."
-                        // Assuming seed.py will connect to the source of truth (e.g., a database) or your K8s backend
+                        // Assuming seed.py will connect to the source of truth (e.g., a database like gogo-main-db)
                         def drBackendSeedSuccess = sh(
                             script: 'docker exec gogo-dr-backend python /app/seed.py',
                             returnStatus: true
@@ -225,7 +240,7 @@ pipeline {
                     }
 
                     // --- 2. Determine Active Frontend & Connect to Active Backend ---
-                    echo "--- Determining Active Frontend and Connecting to ${env.ACTIVE_BACKEND_NAME}:${env.ACTIVE_BACKEND_PORT} ---"
+                    echo "--- Determining Active Frontend and Connecting to http://localhost:${env.ACTIVE_BACKEND_PORT} ---"
                     def mainFrontendIsRunning = sh(
                         script: "docker ps --filter 'name=gogo-main-frontend' --format '{{.Names}}'",
                         returnStdout: true
@@ -234,7 +249,8 @@ pipeline {
                     def mainFrontendIsHealthy = false
                     if (mainFrontendIsRunning) {
                         echo "🔍 Checking health of Main Frontend (gogo-main-frontend:3000)..."
-                        def healthStatus = sh(script: "curl -s http://localhost:3000 || true", returnStatus: true) // Simple curl for frontend
+                        // Assuming frontend serves something on root path or has a health endpoint
+                        def healthStatus = sh(script: "curl -s http://localhost:3000 || true", returnStatus: true)
                         mainFrontendIsHealthy = (healthStatus == 0)
                         if (mainFrontendIsHealthy) {
                             echo "✅ Main Frontend (gogo-main-frontend:3000) is running and healthy."
@@ -254,13 +270,13 @@ pipeline {
 
                         // Reconfigure and restart main frontend to ensure it points to the determined active backend
                         echo "Reconfiguring and restarting Main Frontend (gogo-main-frontend) to connect to backend: http://localhost:${env.ACTIVE_BACKEND_PORT}"
-                        sh "docker stop gogo-main-frontend || true"
+                        sh "docker stop gogo-main-frontend || true" // Stop before running to update env vars
                         sh """
                             docker run --rm -d \
                             --name gogo-main-frontend \
-                            -p 3000:3000 \
+                            -p 3000:80 \
                             -e REACT_APP_API_URL=http://localhost:${env.ACTIVE_BACKEND_PORT} \
-                            your-frontend-image-name:latest # IMPORTANT: Replace with your actual frontend image name and tag
+                            ${FRONTEND_IMAGE}
                         """
                         // Re-check health after restart
                         def recheckFrontendHealthy = sh(
@@ -279,15 +295,14 @@ pipeline {
                         echo "🚨 Main Frontend is not fully active. Initiating DR Frontend failover."
                         sh "docker stop gogo-main-frontend || true" // Stop main frontend
                         echo "Starting DR Frontend (gogo-dr-frontend)..."
+                        // Use the correct DR frontend image and port mapping
                         sh """
                             docker run --rm -d \
                             --name gogo-dr-frontend \
-                            -p 3002:3002 \
+                            -p 3002:80 \
                             -e REACT_APP_API_URL=http://localhost:${env.ACTIVE_BACKEND_PORT} \
-                            your-frontend-dr-image-name:latest # IMPORTANT: Replace with your actual DR frontend image name and tag
+                            ${FRONTEND_IMAGE}
                         """
-                        // Assuming you have a separate DR frontend image or same image deployed differently
-                        // If it's the same image, use 'your-frontend-image-name:latest'
 
                         echo "🔍 Checking health of DR Frontend (gogo-dr-frontend:3002)..."
                         def drFrontendHealthy = sh(
