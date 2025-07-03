@@ -159,6 +159,7 @@ pipeline {
                     // The || true allows the pipeline to continue even if the main backend isn't running.
                     def mainBackendSeedSuccess = sh(
                         script: 'docker exec gogo-backend python /app/seed.py || true',
+                        script: 'docker exec gogo-dr-backend python /app/seed.py || true',
                         returnStatus: true
                     )
                     if (mainBackendSeedSuccess == 0) {
@@ -224,10 +225,7 @@ pipeline {
                         echo "Starting DR Backend (gogo-dr-backend)..."
                         sh "docker start gogo-dr-backend" // Start DR backend. No || true, we expect it to start.
                         echo "🌱 Running seed.py inside DR Backend container (gogo-dr-backend) to sync data from Kubernetes backend (5000)..."
-                        def drBackendSeedSuccess = sh(
-                            script: 'docker exec gogo-dr-backend python /app/seed.py',
-                            returnStatus: true
-                        )
+                        
                         if (drBackendSeedSuccess == 0) {
                             // After seeding, perform a health check on the DR backend
                             def drBackendHealthy = sh(
