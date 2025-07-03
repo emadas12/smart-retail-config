@@ -155,6 +155,8 @@ pipeline {
                     env.DR_TEST_RESULT = "FAILURE" // Assume failure until proven otherwise
 
                     echo "🔄 **Restoring data from Kubernetes backend (5000) to Main Backend (5001)**..."
+                    // This seed is intended for the main backend. If the main backend is down, this command will likely fail.
+                    // The || true allows the pipeline to continue even if the main backend isn't running.
                     def mainBackendSeedSuccess = sh(
                         script: 'docker exec gogo-backend python /app/seed.py || true',
                         returnStatus: true
@@ -173,19 +175,32 @@ pipeline {
                     ).trim()
 
                     if (frontendRunning == 'gogo-main-frontend') {
-                        echo "✅ Main Frontend container (gogo-main-frontend) is running. Connecting DR Frontend to Main Backend (5001)."
-                        sh "docker start gogo-dr-frontend || true"
-                        echo "Main Frontend (3000) is already active. No failover needed for frontend."
+                        echo "✅ Main Frontend container (gogo-main-frontend) is running. Ensuring DR Frontend is stopped."
+                        // If main is up, ensure DR frontend is stopped
+                        echo "Stopping DR Frontend (gogo-dr-frontend)..."
+                        sh "docker stop gogo-dr-frontend || true" // Stop DR, don't start it if main is active.
+                        echo "Main Frontend (3000) is active."
                         env.DR_FRONTEND_STATUS = "Main Active"
                     } else {
-                        echo "🚨 Main Frontend container (gogo-main-frontend) is **NOT** running. Launching DR Frontend (gogo-dr-frontend) (on 3002) and connecting it to Main Backend (5001)..."
-                        sh "docker start gogo-dr-frontend || true"
+                        echo "🚨 Main Frontend container (gogo-main-frontend) is **NOT** running. Activating DR Frontend (gogo-dr-frontend) (on 3002)."
+                        // If main is down, stop main frontend and start DR frontend
+                        echo "Stopping Main Frontend (gogo-main-frontend)..."
+                        sh "docker stop gogo-main-frontend || true" // Stop main, in case it's in a bad state
+                        echo "Starting DR Frontend (gogo-dr-frontend)..."
+                        sh "docker start gogo-dr-frontend" // Start DR frontend. No || true here, we expect it to start.
                         // Add a health check here specifically for gogo-dr-frontend after potential start
-                        def drFrontendHealthy = sh(script: "curl -s http://localhost:3002 || true", returnStatus: true) // Example health check
+                        def drFrontendHealthy = sh(
+                            script: "curl -s http://localhost:3002 || true", // Example health check
+                            returnStatus: true
+                        )
                         if (drFrontendHealthy == 0) {
+                            echo "✅ DR Frontend is healthy on 3002!"
                             env.DR_FRONTEND_STATUS = "DR Activated & Healthy (3002)"
                         } else {
+                            echo "❌ DR Frontend activated but Health Check Failed (3002)"
                             env.DR_FRONTEND_STATUS = "DR Activated but Health Check Failed (3002)"
+                            // Consider failing the build here if DR frontend health is critical
+                            // error "DR Frontend health check failed after activation!"
                         }
                     }
 
@@ -196,11 +211,18 @@ pipeline {
                     ).trim()
 
                     if (backendRunning == 'gogo-backend') {
-                        echo "✅ Main Backend container (gogo-backend) is running. No failover needed for backend."
+                        echo "✅ Main Backend container (gogo-backend) is running. Ensuring DR Backend is stopped."
+                        // If main is up, ensure DR backend is stopped
+                        echo "Stopping DR Backend (gogo-dr-backend)..."
+                        sh "docker stop gogo-dr-backend || true" // Stop DR backend
                         env.DR_BACKEND_STATUS = "Main Active"
                     } else {
-                        echo "🚨 Main Backend container (gogo-backend) is **NOT** running. Launching DR Backend (gogo-dr-backend) (on 5002) and seeding data..."
-                        sh "docker start gogo-dr-backend || true"
+                        echo "🚨 Main Backend container (gogo-backend) is **NOT** running. Activating DR Backend (gogo-dr-backend) (on 5002) and seeding data."
+                        // If main is down, stop main backend and start DR backend
+                        echo "Stopping Main Backend (gogo-backend)..."
+                        sh "docker stop gogo-backend || true" // Stop main backend
+                        echo "Starting DR Backend (gogo-dr-backend)..."
+                        sh "docker start gogo-dr-backend" // Start DR backend. No || true, we expect it to start.
                         echo "🌱 Running seed.py inside DR Backend container (gogo-dr-backend) to sync data from Kubernetes backend (5000)..."
                         def drBackendSeedSuccess = sh(
                             script: 'docker exec gogo-dr-backend python /app/seed.py',
@@ -208,24 +230,35 @@ pipeline {
                         )
                         if (drBackendSeedSuccess == 0) {
                             // After seeding, perform a health check on the DR backend
-                            def drBackendHealthy = sh(script: "curl -s http://localhost:5002/health | grep -q '\"status\":\"healthy\"'", returnStatus: true)
+                            def drBackendHealthy = sh(
+                                script: "curl -s http://localhost:5002/health | grep -q '\"status\":\"healthy\"'",
+                                returnStatus: true
+                            )
                             if (drBackendHealthy == 0) {
+                                echo "✅ DR Backend is healthy on 5002!"
                                 env.DR_BACKEND_STATUS = "DR Activated & Healthy (5002)"
                                 env.DR_DATA_SYNC_STATUS = "DR Backend Seeded Successfully"
                             } else {
+                                echo "❌ DR Backend activated but Health Check Failed (5002)"
                                 env.DR_BACKEND_STATUS = "DR Activated but Health Check Failed (5002)"
                                 env.DR_DATA_SYNC_STATUS = "DR Backend Seeded but Health Check Failed"
+                                // Consider failing the build here if DR backend health is critical
+                                // error "DR Backend health check failed after activation!"
                             }
                         } else {
+                             echo "❌ DR Backend activated but Seed Failed (5002)"
                              env.DR_BACKEND_STATUS = "DR Activated but Seed Failed (5002)"
                              env.DR_DATA_SYNC_STATUS = "DR Backend Seed Failed"
+                             // Consider failing the build here if DR backend seed fails
+                             // error "DR Backend data seeding failed!"
                         }
                     }
 
                     // Determine overall DR test result based on individual statuses
-                    if ((env.DR_FRONTEND_STATUS.contains("Active") || env.DR_FRONTEND_STATUS.contains("Activated & Healthy")) &&
-                        (env.DR_BACKEND_STATUS.contains("Active") || env.DR_BACKEND_STATUS.contains("Activated & Healthy")) &&
-                        (env.DR_DATA_SYNC_STATUS.contains("Seeded"))) { // Refine this logic based on your specific "pass" conditions
+                    // Refined logic: both active components must be healthy or main must be active
+                    if (((env.DR_FRONTEND_STATUS == "Main Active" || env.DR_FRONTEND_STATUS == "DR Activated & Healthy (3002)")) &&
+                        ((env.DR_BACKEND_STATUS == "Main Active" || env.DR_BACKEND_STATUS == "DR Activated & Healthy (5002)")) &&
+                        (env.DR_DATA_SYNC_STATUS.contains("Seeded"))) {
                         env.DR_TEST_RESULT = "SUCCESS"
                     } else {
                         env.DR_TEST_RESULT = "FAILURE"
