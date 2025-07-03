@@ -127,11 +127,11 @@ pipeline {
                             returnStatus: true
                         )
                         if (healthCheckStatus == 0) {
-                            echo "✅ Backend is healthy on attempt ${i}!"
+                            echo "✅ Main Backend is healthy on attempt ${i}!"
                             healthy = true
                             break
                         } else {
-                            echo "❌ Backend not yet healthy."
+                            echo "❌ Main Backend not yet healthy."
                             if (i < maxAttempts) {
                                 sleep waitTime
                             }
@@ -139,7 +139,10 @@ pipeline {
                     }
 
                     if (!healthy) {
-                        error "❌ Backend health check failed after ${maxAttempts} attempts!"
+                        // Crucial change here: Do NOT use 'error'. Log a warning and proceed.
+                        echo "⚠️ Main Backend health check failed after ${maxAttempts} attempts. This is expected if the main backend is down, proceeding to DR Failover stage to check DR status."
+                    } else {
+                        echo "✅ Main Backend is healthy."
                     }
                 }
             }
