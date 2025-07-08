@@ -16,7 +16,7 @@ pipeline {
     }
 
     stages {
-        stage('📥 Clone Dev Repo') {
+        stage('Clone Dev Repo') {
             steps {
                 dir('dev') {
                     git url: "${DEV_REPO_URL}", branch: 'main'
@@ -24,7 +24,7 @@ pipeline {
             }
         }
 
-        stage('📁 Clone Config Repo') {
+        stage('Clone Config Repo') {
             steps {
                 dir('config') {
                     git url: "${CONFIG_REPO_URL}", branch: 'main'
@@ -32,7 +32,7 @@ pipeline {
             }
         }
 
-        stage('🕵️ Check Backend Changes') {
+        stage('Check Backend Changes') {
             steps {
                 dir('dev') {
                     script {
@@ -42,7 +42,7 @@ pipeline {
                         ) == 0
 
                         if (!backendChanged) {
-                            echo "⚠️ No changes in backend code. Aborting..."
+                            echo "No changes in backend code. Aborting..."
                             currentBuild.result = 'ABORTED'
                             error("No changes in backend/")
                         }
@@ -51,18 +51,18 @@ pipeline {
             }
         }
 
-        stage('🐳 Build Docker Image') {
+        stage('Build Docker Image') {
             steps {
                 dir('dev') {
                     script {
-                        echo "📦 Building image ${IMAGE_NAME}:${TAG}"
+                        echo "Building image ${IMAGE_NAME}:${TAG}"
                         docker.build("${IMAGE_NAME}:${TAG}", "-f backend/Dockerfile backend")
                     }
                 }
             }
         }
 
-        stage('🚀 Push to Docker Hub') {
+        stage('Push to Docker Hub') {
             steps {
                 withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     script {
@@ -75,13 +75,13 @@ pipeline {
             }
         }
 
-        stage('✏️ Update Deployment YAML') {
+        stage('Update Deployment YAML') {
             steps {
                 dir('config') {
                     script {
                         def filePath = "k8s/backend/deployment.yaml"
                         def newImage = "${IMAGE_NAME}:${TAG}"
-                        echo "🔧 Updating ${filePath} with new image: ${newImage}"
+                        echo "Updating ${filePath} with new image: ${newImage}"
                         sh "sed -i 's|image:.*|image: ${newImage}|' ${filePath}"
                         sh "cat ${filePath}"
                     }
@@ -89,7 +89,7 @@ pipeline {
             }
         }
 
-        stage('📤 Commit & Push Changes') {
+        stage('Commit & Push Changes') {
             steps {
                 dir('config') {
                     withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
@@ -99,7 +99,7 @@ pipeline {
                                 git config user.name "Rani Saed (CI/CD)"
                                 git add k8s/backend/deployment.yaml
                                 if ! git diff --cached --quiet; then
-                                    git commit -m "🚀 Update backend image to ${TAG}"
+                                    git commit -m "Update backend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
                                     git push origin main
                                 else
@@ -112,10 +112,10 @@ pipeline {
             }
         }
 
-        stage('❤️ Health Check') {
+        stage('Health Check') {
             steps {
                 script {
-                    echo "🔍 Checking backend health..."
+                    echo "Checking backend health..."
                     def maxAttempts = 15
                     def waitTime = 10
                     def healthy = false
@@ -127,11 +127,11 @@ pipeline {
                             returnStatus: true
                         )
                         if (healthCheckStatus == 0) {
-                            echo "✅ Backend is healthy on attempt ${i}!"
+                            echo "Backend is healthy on attempt ${i}!"
                             healthy = true
                             break
                         } else {
-                            echo "❌ Backend not yet healthy."
+                            echo "Backend not yet healthy."
                             if (i < maxAttempts) {
                                 sleep waitTime
                             }
@@ -139,31 +139,25 @@ pipeline {
                     }
 
                     if (!healthy) {
-                        error "❌ Backend health check failed after ${maxAttempts} attempts!"
+                        error "Backend health check failed after ${maxAttempts} attempts!"
                     }
                 }
             }
         }
 
-        stage('🛡️ DR Failover & Sync') {
+        stage('DR Failover & Sync') {
             steps {
                 script {
-                    // Initialize variables for DR report
                     env.DR_FRONTEND_STATUS = "UNKNOWN"
                     env.DR_BACKEND_STATUS = "UNKNOWN"
                     env.DR_DATA_SYNC_STATUS = "UNKNOWN"
-                    env.DR_TEST_RESULT = "FAILURE" // Assume failure until proven otherwise
+                    env.DR_TEST_RESULT = "FAILURE"
 
-                    echo "🔄 **Attempting to seed Main Backend (5001) and DR Backend (5002) from Kubernetes backend (5000)**..."
-                    // Corrected syntax: Each 'sh' command should have its own 'script' parameter.
-                    // If you intend for *both* these seed operations to happen, they should be separate sh calls.
-                    // This initial section of the logic from your original code suggests attempting to seed
-                    // gogo-backend (main on 5001) and gogo-dr-backend (on 5002)
+                    echo "Attempting to seed Main Backend (5001) and DR Backend (5002) from Kubernetes backend (5000)..."
                     def mainBackendSeedSuccess = sh(
                         script: 'docker exec gogo-backend python /app/seed.py || true',
                         returnStatus: true
                     )
-                    // Separate call for DR backend seeding for correct syntax
                     def drBackendInitialSeedSuccess = sh(
                         script: 'docker exec gogo-dr-backend python /app/seed.py || true',
                         returnStatus: true
@@ -179,96 +173,80 @@ pipeline {
                         env.DR_DATA_SYNC_STATUS = "Both Main & DR Backend Seeds Failed or Not Running"
                     }
 
-
-                    echo "🔍 Checking if **Main Frontend container (gogo-main-frontend)** is running..."
+                    echo "Checking if Main Frontend container (gogo-main-frontend) is running..."
                     def frontendRunning = sh(
                         script: "docker ps --filter 'name=gogo-main-frontend' --format '{{.Names}}'",
                         returnStdout: true
                     ).trim()
 
                     if (frontendRunning == 'gogo-main-frontend') {
-                        echo "✅ Main Frontend container (gogo-main-frontend) is running. Ensuring DR Frontend is stopped."
-                        // If main is up, ensure DR frontend is stopped
+                        echo "Main Frontend container (gogo-main-frontend) is running. Ensuring DR Frontend is stopped."
                         echo "Stopping DR Frontend (gogo-dr-frontend)..."
-                        sh "docker stop gogo-dr-frontend || true" // Stop DR, don't start it if main is active.
+                        sh "docker stop gogo-dr-frontend || true"
                         echo "Main Frontend (3000) is active."
                         env.DR_FRONTEND_STATUS = "Main Active"
                     } else {
-                        echo "🚨 Main Frontend container (gogo-main-frontend) is **NOT** running. Activating DR Frontend (gogo-dr-frontend) (on 3002)."
-                        // If main is down, stop main frontend and start DR frontend
+                        echo "Main Frontend container (gogo-main-frontend) is NOT running. Activating DR Frontend (gogo-dr-frontend) (on 3002)."
                         echo "Stopping Main Frontend (gogo-main-frontend)..."
-                        sh "docker stop gogo-main-frontend || true" // Stop main, in case it's in a bad state
+                        sh "docker stop gogo-main-frontend || true"
                         echo "Starting DR Frontend (gogo-dr-frontend)..."
-                        sh "docker start gogo-dr-frontend" // Start DR frontend. No || true here, we expect it to start.
-                        // Add a health check here specifically for gogo-dr-frontend after potential start
+                        sh "docker start gogo-dr-frontend"
                         def drFrontendHealthy = sh(
-                            script: "curl -s http://localhost:3002 || true", // Example health check
+                            script: "curl -s http://localhost:3002 || true",
                             returnStatus: true
                         )
                         if (drFrontendHealthy == 0) {
-                            echo "✅ DR Frontend is healthy on 3002!"
+                            echo "DR Frontend is healthy on 3002!"
                             env.DR_FRONTEND_STATUS = "DR Activated & Healthy (3002)"
                         } else {
-                            echo "❌ DR Frontend activated but Health Check Failed (3002)"
+                            echo "DR Frontend activated but Health Check Failed (3002)"
                             env.DR_FRONTEND_STATUS = "DR Activated but Health Check Failed (3002)"
-                            // Consider failing the build here if DR frontend health is critical
-                            // error "DR Frontend health check failed after activation!"
                         }
                     }
 
-                    echo "🔍 Checking if **Main Backend container (gogo-backend)** is running..."
+                    echo "Checking if Main Backend container (gogo-backend) is running..."
                     def backendRunning = sh(
                         script: "docker ps --filter 'name=gogo-backend' --format '{{.Names}}'",
                         returnStdout: true
                     ).trim()
 
                     if (backendRunning == 'gogo-backend') {
-                        echo "✅ Main Backend container (gogo-backend) is running. Ensuring DR Backend is stopped."
-                        // If main is up, ensure DR backend is stopped
+                        echo "Main Backend container (gogo-backend) is running. Ensuring DR Backend is stopped."
                         echo "Stopping DR Backend (gogo-dr-backend)..."
-                        sh "docker stop gogo-dr-backend || true" // Stop DR backend
+                        sh "docker stop gogo-dr-backend || true"
                         env.DR_BACKEND_STATUS = "Main Active"
                     } else {
-                        echo "🚨 Main Backend container (gogo-backend) is **NOT** running. Activating DR Backend (gogo-dr-backend) (on 5002) and seeding data."
-                        // If main is down, stop main backend and start DR backend
+                        echo "Main Backend container (gogo-backend) is NOT running. Activating DR Backend (gogo-dr-backend) (on 5002) and seeding data."
                         echo "Stopping Main Backend (gogo-backend)..."
-                        sh "docker stop gogo-backend || true" // Stop main backend
+                        sh "docker stop gogo-backend || true"
                         echo "Starting DR Backend (gogo-dr-backend)..."
-                        sh "docker start gogo-dr-backend" // Start DR backend. No || true, we expect it to start.
-                        echo "🌱 Running seed.py inside DR Backend container (gogo-dr-backend) to sync data from Kubernetes backend (5000)..."
-                        // This specific seeding call remains as it was, as it implies seeding from K8s to DR.
+                        sh "docker start gogo-dr-backend"
+                        echo "Running seed.py inside DR Backend container (gogo-dr-backend) to sync data from Kubernetes backend (5000)..."
                         def drBackendSeedOnFailoverSuccess = sh(
                             script: 'docker exec gogo-dr-backend python /app/seed.py',
                             returnStatus: true
                         )
                         if (drBackendSeedOnFailoverSuccess == 0) {
-                            // After seeding, perform a health check on the DR backend
                             def drBackendHealthy = sh(
                                 script: "curl -s http://localhost:5002/health | grep -q '\"status\":\"healthy\"'",
                                 returnStatus: true
                             )
                             if (drBackendHealthy == 0) {
-                                echo "✅ DR Backend is healthy on 5002!"
+                                echo "DR Backend is healthy on 5002!"
                                 env.DR_BACKEND_STATUS = "DR Activated & Healthy (5002)"
                                 env.DR_DATA_SYNC_STATUS = "DR Backend Seeded Successfully"
                             } else {
-                                echo "❌ DR Backend activated but Health Check Failed (5002)"
+                                echo "DR Backend activated but Health Check Failed (5002)"
                                 env.DR_BACKEND_STATUS = "DR Activated but Health Check Failed (5002)"
                                 env.DR_DATA_SYNC_STATUS = "DR Backend Seeded but Health Check Failed"
-                                // Consider failing the build here if DR backend health is critical
-                                // error "DR Backend health check failed after activation!"
                             }
                         } else {
-                             echo "❌ DR Backend activated but Seed Failed (5002)"
+                             echo "DR Backend activated but Seed Failed (5002)"
                              env.DR_BACKEND_STATUS = "DR Activated but Seed Failed (5002)"
                              env.DR_DATA_SYNC_STATUS = "DR Backend Seed Failed"
-                             // Consider failing the build here if DR backend seed fails
-                             // error "DR Backend data seeding failed!"
                         }
                     }
 
-                    // Determine overall DR test result based on individual statuses
-                    // Refined logic: both active components must be healthy or main must be active
                     if (((env.DR_FRONTEND_STATUS == "Main Active" || env.DR_FRONTEND_STATUS == "DR Activated & Healthy (3002)")) &&
                         ((env.DR_BACKEND_STATUS == "Main Active" || env.DR_BACKEND_STATUS == "DR Activated & Healthy (5002)")) &&
                         (env.DR_DATA_SYNC_STATUS.contains("Seeded"))) {
@@ -280,7 +258,7 @@ pipeline {
             }
         }
 
-        stage('📊 Generate DR Readiness Reports') {
+        stage('Generate DR Readiness Reports') {
             steps {
                 script {
                     echo "--- DR Readiness Report ---"
@@ -294,7 +272,6 @@ pipeline {
                     echo "DR Data Sync Status: ${env.DR_DATA_SYNC_STATUS}"
                     echo "---------------------------"
 
-                    // You can save this to a file as a build artifact
                     def reportContent = """
                         DR Readiness Report
                         -------------------
@@ -312,13 +289,12 @@ pipeline {
                     writeFile file: 'dr-readiness-report.txt', text: reportContent
                     archiveArtifacts artifacts: 'dr-readiness-report.txt', fingerprint: true
 
-                    // Send a richer Slack notification with the report summary
                     withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                         def slackMessage = ""
                         if (env.DR_TEST_RESULT == "SUCCESS") {
-                            slackMessage = "✅ *DR Readiness Test Passed!*\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nFrontend: ${env.DR_FRONTEND_STATUS}\\nBackend: ${env.DR_BACKEND_STATUS}\\nData Sync: ${env.DR_DATA_SYNC_STATUS}"
+                            slackMessage = "DR Readiness Test Passed!\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nFrontend: ${env.DR_FRONTEND_STATUS}\\nBackend: ${env.DR_BACKEND_STATUS}\\nData Sync: ${env.DR_DATA_SYNC_STATUS}"
                         } else {
-                            slackMessage = "❌ *DR Readiness Test FAILED!*\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nFrontend: ${env.DR_FRONTEND_STATUS}\\nBackend: ${env.DR_BACKEND_STATUS}\\nData Sync: ${env.DR_DATA_SYNC_STATUS}\\nCheck logs for details."
+                            slackMessage = "DR Readiness Test FAILED!\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nFrontend: ${env.DR_FRONTEND_STATUS}\\nBackend: ${env.DR_BACKEND_STATUS}\\nData Sync: ${env.DR_DATA_SYNC_STATUS}\\nCheck logs for details."
                         }
 
                         sh """
@@ -333,31 +309,31 @@ pipeline {
 
     post {
         success {
-            echo "✅ Backend image pushed and deployment updated."
+            echo "Backend image pushed and deployment updated."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Backend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
+                    --data '{"text": "Backend CI/CD succeeded — ${TAG} deployed & healthy!"}' $SLACK_WEBHOOK
                 """
             }
         }
 
         aborted {
-            echo "⏹️ Pipeline aborted (no backend changes)"
+            echo "Pipeline aborted (no backend changes)"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Backend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                    --data '{"text": "Backend pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
                 """
             }
         }
 
         failure {
-            echo "❌ Pipeline failed"
+            echo "Pipeline failed"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Backend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                    --data '{"text": "Backend pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
                 """
             }
         }
