@@ -16,7 +16,7 @@ pipeline {
     }
 
     stages {
-        stage('📥 Clone Dev Repo') {
+        stage('Clone Dev Repo') {
             steps {
                 dir('dev') {
                     git url: "${DEV_REPO_URL}", branch: 'main'
@@ -24,7 +24,7 @@ pipeline {
             }
         }
 
-        stage('📁 Clone Config Repo') {
+        stage('Clone Config Repo') {
             steps {
                 dir('config') {
                     git url: "${CONFIG_REPO_URL}", branch: 'main'
@@ -32,7 +32,7 @@ pipeline {
             }
         }
 
-        stage('🕵️ Check Frontend Changes') {
+        stage('Check Frontend Changes') {
             steps {
                 dir('dev') {
                     script {
@@ -42,7 +42,7 @@ pipeline {
                         ) == 0
 
                         if (!frontendChanged) {
-                            echo "⚠️ No changes in frontend code. Aborting..."
+                            echo "No changes in frontend code. Aborting..."
                             currentBuild.result = 'ABORTED'
                             error("No changes in frontend/")
                         }
@@ -51,18 +51,18 @@ pipeline {
             }
         }
 
-        stage('🐳 Build Docker Image') {
+        stage('Build Docker Image') {
             steps {
                 dir('dev') {
                     script {
-                        echo "📦 Building image ${IMAGE_NAME}:${TAG}"
+                        echo "Building image ${IMAGE_NAME}:${TAG}"
                         docker.build("${IMAGE_NAME}:${TAG}", "-f frontend/Dockerfile frontend")
                     }
                 }
             }
         }
 
-        stage('🚀 Push to Docker Hub') {
+        stage('Push to Docker Hub') {
             steps {
                 withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     script {
@@ -75,13 +75,13 @@ pipeline {
             }
         }
 
-        stage('✏️ Update Deployment YAML') {
+        stage('Update Deployment YAML') {
             steps {
                 dir('config') {
                     script {
                         def filePath = "k8s/frontend/deployment.yaml"
                         def newImage = "${IMAGE_NAME}:${TAG}"
-                        echo "🔧 Updating ${filePath} with new image: ${newImage}"
+                        echo "Updating ${filePath} with new image: ${newImage}"
                         sh """
                             sed -i 's|image:.*|image: ${newImage}|' ${filePath}
                         """
@@ -91,7 +91,7 @@ pipeline {
             }
         }
 
-        stage('📤 Commit & Push Changes') {
+        stage('Commit & Push Changes') {
             steps {
                 dir('config') {
                     withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
@@ -101,7 +101,7 @@ pipeline {
                                 git config user.name "Rani Saed (CI/CD)"
                                 git add k8s/frontend/deployment.yaml
                                 if ! git diff --cached --quiet; then
-                                    git commit -m "🚀 Update frontend image to ${TAG}"
+                                    git commit -m "Update frontend image to ${TAG}"
                                     git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
                                     git push origin main
                                 else
@@ -114,40 +114,31 @@ pipeline {
             }
         }
 
-        stage('❤️ Health Check: Main Frontend (Post-Deployment)') {
+        stage('Health Check: Main Frontend (Post-Deployment)') {
             steps {
                 script {
-                    echo "🔍 Checking main frontend health after deployment update..."
+                    echo "Checking main frontend health after deployment update..."
                     def maxAttempts = 15
                     def waitTime = 10
                     def totalTimeout = maxAttempts * waitTime
                     def healthy = false
 
-                    // Based on your docker ps, gogo-main-frontend is mapped to 3000
-                    def frontendUrl = "http://localhost:3000" // Or http://gogo-main-frontend if on same Docker network/machine
+                    def frontendUrl = "http://localhost:3000"
 
                     timeout(time: totalTimeout, unit: 'SECONDS') {
                         for (int i = 1; i <= maxAttempts; i++) {
                             echo "Attempt ${i}/${maxAttempts}: Curling ${frontendUrl}..."
-                            // Use curl -s -f: silent, fail on HTTP errors (4xx/5xx).
-                            // returnStatus: true captures the exit status of curl.
-                            // A 0 status means curl succeeded and the HTTP response was 2xx.
                             def healthCheckStatus = sh(
-                                script: "curl -s -f ${frontendUrl} || true", // Added || true to prevent immediate failure if curl itself errors
+                                script: "curl -s -f ${frontendUrl} || true",
                                 returnStatus: true
                             )
 
-                            // If curl -f succeeds (0) and we can grep for something meaningful, or just check curl status
                             if (healthCheckStatus == 0) {
-                                // For a frontend, you might just check for any HTML content or a specific title.
-                                // If the frontend serves dynamic content, a simple curl might be enough to check connectivity.
-                                // If it has a specific /health endpoint, use that. Assuming no specific /health for frontend,
-                                // we'll just check if the curl command itself succeeded (HTTP 2xx).
-                                echo "✅ Main Frontend responded successfully on attempt ${i} (HTTP 2xx)!"
+                                echo "Main Frontend responded successfully on attempt ${i} (HTTP 2xx)!"
                                 healthy = true
                                 break
                             } else {
-                                echo "❌ Main Frontend not yet healthy or returned an error status (curl exit code: ${healthCheckStatus})."
+                                echo "Main Frontend not yet healthy or returned an error status (curl exit code: ${healthCheckStatus})."
                                 if (i < maxAttempts) {
                                     sleep waitTime
                                 }
@@ -155,43 +146,26 @@ pipeline {
                         }
 
                         if (!healthy) {
-                            // IMPORTANT CHANGE: Log a warning instead of failing the pipeline.
-                            // This allows the pipeline to continue to a potential DR stage for the frontend.
-                            echo "⚠️ Main Frontend health check failed after ${maxAttempts} attempts and ${totalTimeout} seconds. This may indicate an issue with the main frontend or its dependencies. Proceeding with the pipeline, potentially to DR stage."
-                            // You might want to set a build result flag here if you want to notify specifically about this.
-                            // e.g., env.MAIN_FRONTEND_HEALTH_STATUS = "UNHEALTHY"
+                            echo "Main Frontend health check failed after ${maxAttempts} attempts and ${totalTimeout} seconds. This may indicate an issue with the main frontend or its dependencies. Proceeding with the pipeline, potentially to DR stage."
                         } else {
-                            echo "✅ Main Frontend is confirmed healthy."
-                            // e.g., env.MAIN_FRONTEND_HEALTH_STATUS = "HEALTHY"
+                            echo "Main Frontend is confirmed healthy."
                         }
                     }
                 }
             }
         }
 
-        // --- NEW STAGE FOR FRONTEND DR FAILOVER (Placeholder for your future logic) ---
-        // You would add a stage here similar to your backend DR stage
-        // that checks the status of the main frontend, and if it's down,
-        // it would activate the DR frontend (gogo-dr-frontend).
-        // This stage would likely involve checking which backend (main or DR) is active
-        // and configuring the active frontend to point to it.
-        stage('🛡️ Frontend DR Failover & Sync') {
+        stage('Frontend DR Failover & Sync') {
             steps {
                 script {
                     echo "Starting Frontend DR failover logic..."
 
-                    // Initialize DR status variables for the frontend
                     env.FRONTEND_DEPLOYMENT_STATUS = "UNKNOWN"
-                    env.FRONTEND_TEST_RESULT = "FAILURE" // Assume failure until proven otherwise
+                    env.FRONTEND_TEST_RESULT = "FAILURE"
 
-                    // Determine current active backend based on your backend pipeline's logic
-                    // You might need a way to pass this state from the backend pipeline,
-                    // or re-evaluate the backend status here. For simplicity, let's assume
-                    // you can figure out the active backend port (5001 for main, 5002 for DR).
-                    def activeBackendPort = "5001" // Default to main backend
-                    def activeBackendName = "gogo-backend" // Default to main backend
+                    def activeBackendPort = "5001"
+                    def activeBackendName = "gogo-backend"
 
-                    // Example: Check backend status (simplified - real implementation might be more robust)
                     def mainBackendHealthy = sh(script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"' || true", returnStatus: true) == 0
                     if (!mainBackendHealthy) {
                          echo "Main Backend (gogo-backend:5000) is not healthy. Assuming DR Backend (gogo-dr-backend:5002) is active or will be activated."
@@ -205,71 +179,64 @@ pipeline {
 
                     echo "Frontend will attempt to connect to: ${activeBackendName}:${activeBackendPort}"
 
-                    echo "🔍 Checking if **Main Frontend container (gogo-main-frontend)** is running..."
+                    echo "Checking if Main Frontend container (gogo-main-frontend) is running..."
                     def mainFrontendRunning = sh(
                         script: "docker ps --filter 'name=gogo-main-frontend' --format '{{.Names}}'",
                         returnStdout: true
                     ).trim()
 
                     if (mainFrontendRunning == 'gogo-main-frontend') {
-                        echo "✅ Main Frontend container (gogo-main-frontend) is running. Checking its health with active backend."
-                        // Attempt to curl the main frontend, expecting it to connect to the determined active backend
+                        echo "Main Frontend container (gogo-main-frontend) is running. Checking its health with active backend."
                         def mainFrontendHealthy = sh(
-                            script: "curl -s http://localhost:3000 || true", // Curl the main frontend on its exposed port
+                            script: "curl -s http://localhost:3000 || true",
                             returnStatus: true
                         )
 
                         if (mainFrontendHealthy == 0) {
-                            echo "✅ Main Frontend (3000) is healthy and assumed to be connected to the active backend."
+                            echo "Main Frontend (3000) is healthy and assumed to be connected to the active backend."
                             env.FRONTEND_DEPLOYMENT_STATUS = "Main Active"
-                            sh "docker stop gogo-dr-frontend || true" // Ensure DR frontend is stopped if main is healthy
+                            sh "docker stop gogo-dr-frontend || true"
                             echo "Ensured DR Frontend (gogo-dr-frontend) is stopped."
                         } else {
-                            echo "❌ Main Frontend (3000) is running but not healthy. Initiating failover to DR Frontend."
-                            sh "docker stop gogo-main-frontend || true" // Stop main frontend to allow DR to take over
+                            echo "Main Frontend (3000) is running but not healthy. Initiating failover to DR Frontend."
+                            sh "docker stop gogo-main-frontend || true"
                             echo "Stopped Main Frontend (gogo-main-frontend)."
 
                             echo "Starting DR Frontend (gogo-dr-frontend)..."
-                            sh "docker start gogo-dr-frontend" // Start DR frontend
-                            // You might need a step here to reconfigure the DR frontend to point to the correct backend if it's dynamic
-                            // For example, if it uses an environment variable:
-                            // sh "docker exec gogo-dr-frontend sh -c 'echo \"VUE_APP_BACKEND_URL=http://${activeBackendName}:${activeBackendPort}\" > .env.production && npm run build'"
-                            // This would depend on how your frontend handles backend URLs.
+                            sh "docker start gogo-dr-frontend"
 
                             def drFrontendHealthy = sh(
-                                script: "curl -s http://localhost:3002 || true", // Health check DR frontend on its exposed port
+                                script: "curl -s http://localhost:3002 || true",
                                 returnStatus: true
                             )
                             if (drFrontendHealthy == 0) {
-                                echo "✅ DR Frontend is healthy on 3002!"
+                                echo "DR Frontend is healthy on 3002!"
                                 env.FRONTEND_DEPLOYMENT_STATUS = "DR Activated & Healthy (3002)"
                             } else {
-                                echo "❌ DR Frontend activated but Health Check Failed (3002)."
+                                echo "DR Frontend activated but Health Check Failed (3002)."
                                 env.FRONTEND_DEPLOYMENT_STATUS = "DR Activated but Health Check Failed (3002)"
                             }
                         }
 
                     } else {
-                        echo "🚨 Main Frontend container (gogo-main-frontend) is **NOT** running. Activating DR Frontend (gogo-dr-frontend) (on 3002)."
-                        sh "docker stop gogo-main-frontend || true" // Ensure main frontend is stopped
+                        echo "Main Frontend container (gogo-main-frontend) is NOT running. Activating DR Frontend (gogo-dr-frontend) (on 3002)."
+                        sh "docker stop gogo-main-frontend || true"
                         echo "Starting DR Frontend (gogo-dr-frontend)..."
-                        sh "docker start gogo-dr-frontend" // Start DR frontend
+                        sh "docker start gogo-dr-frontend"
 
-                        // Similar to above, reconfigure DR frontend if needed
                         def drFrontendHealthy = sh(
                             script: "curl -s http://localhost:3002 || true",
                             returnStatus: true
                         )
                         if (drFrontendHealthy == 0) {
-                            echo "✅ DR Frontend is healthy on 3002!"
+                            echo "DR Frontend is healthy on 3002!"
                             env.FRONTEND_DEPLOYMENT_STATUS = "DR Activated & Healthy (3002)"
                         } else {
-                            echo "❌ DR Frontend activated but Health Check Failed (3002)."
+                            echo "DR Frontend activated but Health Check Failed (3002)."
                             env.FRONTEND_DEPLOYMENT_STATUS = "DR Activated but Health Check Failed (3002)"
                         }
                     }
 
-                    // Determine overall DR test result for frontend
                     if (env.FRONTEND_DEPLOYMENT_STATUS.contains("Active") || env.FRONTEND_DEPLOYMENT_STATUS.contains("Activated & Healthy")) {
                         env.FRONTEND_TEST_RESULT = "SUCCESS"
                     } else {
@@ -280,7 +247,7 @@ pipeline {
         }
 
 
-        stage('📊 Generate Frontend Readiness Reports') {
+        stage('Generate Frontend Readiness Reports') {
             steps {
                 script {
                     echo "--- Frontend Readiness Report ---"
@@ -290,7 +257,7 @@ pipeline {
                     echo "---------------------------"
                     echo "Frontend Test Result: **${env.FRONTEND_TEST_RESULT}**"
                     echo "Frontend Deployment Status: ${env.FRONTEND_DEPLOYMENT_STATUS}"
-                    echo "Backend Connected to Frontend: ${env.BACKEND_FOR_FRONTEND ?: 'Not Determined'}" // Report which backend it's configured for
+                    echo "Backend Connected to Frontend: ${env.BACKEND_FOR_FRONTEND ?: 'Not Determined'}"
                     echo "---------------------------"
 
                     def reportContent = """
@@ -312,9 +279,9 @@ pipeline {
                     withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                         def slackMessage = ""
                         if (env.FRONTEND_TEST_RESULT == "SUCCESS") {
-                            slackMessage = "✅ *Frontend* Readiness Test Passed!\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nDeployment: ${env.FRONTEND_DEPLOYMENT_STATUS}\\nBackend Used: ${env.BACKEND_FOR_FRONTEND ?: 'N/A'}"
+                            slackMessage = "Frontend Readiness Test Passed!\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nDeployment: ${env.FRONTEND_DEPLOYMENT_STATUS}\\nBackend Used: ${env.BACKEND_FOR_FRONTEND ?: 'N/A'}"
                         } else {
-                            slackMessage = "❌ *Frontend* Readiness Test FAILED!\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nDeployment: ${env.FRONTEND_DEPLOYMENT_STATUS}\\nBackend Used: ${env.BACKEND_FOR_FRONTEND ?: 'N/A'}\\nCheck logs for details."
+                            slackMessage = "Frontend Readiness Test FAILED!\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nDeployment: ${env.FRONTEND_DEPLOYMENT_STATUS}\\nBackend Used: ${env.BACKEND_FOR_FRONTEND ?: 'N/A'}\\nCheck logs for details."
                         }
 
                         sh """
@@ -329,31 +296,31 @@ pipeline {
 
     post {
         success {
-            echo "✅ Frontend image pushed and deployment updated."
+            echo "Frontend image pushed and deployment updated."
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "✅ *Frontend* CI/CD succeeded — *${TAG}* deployed & healthy!"}' $SLACK_WEBHOOK
+                    --data '{"text": "Frontend CI/CD succeeded — ${TAG} deployed & healthy!"}' $SLACK_WEBHOOK
                 """
             }
         }
 
         aborted {
-            echo "⏹️ Pipeline aborted (no frontend changes)"
+            echo "Pipeline aborted (no frontend changes)"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "⚠️ *Frontend* pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                    --data '{"text": "Frontend pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
                 """
             }
         }
 
         failure {
-            echo "❌ Pipeline failed"
+            echo "Pipeline failed"
             withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
                 sh """
                     curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text": "❌ *Frontend* pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                    --data '{"text": "Frontend pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
                 """
             }
         }
