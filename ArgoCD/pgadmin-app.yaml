@@ -1,19 +1,18 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: pgadmin-app # A unique name for your pgAdmin application in ArgoCD
-  namespace: argocd # ArgoCD applications are typically defined in the argocd namespace
+  name: pgadmin-app
+  namespace: argocd
 spec:
-  project: default # Assign to the 'default' project
+  project: default
   source:
-    repoURL: https://github.com/RaniSaed/smart-retail-config.git # Your Git repository URL
-    targetRevision: main # The branch or tag to deploy from
-    path: k8s/pgadmin # <--- IMPORTANT: This is the path within your repo where pgAdmin manifests are
+    repoURL: https://github.com/RaniSaed/smart-retail-config.git
+    targetRevision: main
+    path: k8s/pgadmin
   destination:
-    server: https://kubernetes.default.svc # The Kubernetes API server URL for your cluster
-    namespace: default # <--- The target Kubernetes namespace for pgAdmin deployment
+    server: https://kubernetes.default.svc
+    namespace: default
   syncPolicy:
     automated:
-      prune: true # Allows ArgoCD to delete resources that are no longer in Git
-      selfHeal: true # Allows ArgoCD to correct any drift from the desired state defined in Git
-    # Other sync options can be added here if needed, e.g., 'allowEmpty'
+      prune: true
+      selfHeal: true
