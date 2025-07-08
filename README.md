@@ -1,4 +1,3 @@
-
 # Smart Retail – Infrastructure & CI/CD Configuration
 
 This repository contains the infrastructure, deployment, monitoring, and CI/CD configurations for the [Smart Retail Inventory System](https://github.com/RaniSaed/smart-retail-dev).  
@@ -9,7 +8,6 @@ It follows GitOps and DevOps best practices using ArgoCD, Jenkins, Kubernetes, P
 ## Repository Structure
 
 ```bash
-
 .
 ├── ArgoCD/                  # ArgoCD application definitions
 │   ├── backend-app.yaml
@@ -41,20 +39,21 @@ It follows GitOps and DevOps best practices using ArgoCD, Jenkins, Kubernetes, P
 │   ├── pgadmin-secret.yaml
 │   └── secret.yaml
 ├── terraform/               # Terraform IaC to provision infrastructure
-│   ├── providers.tf         # AWS provider configuration
-│   ├── ec2.tf               # EC2 instance provisioning
-│   ├── vpc.tf               # VPC and subnets
-│   ├── security_groups.tf   # Firewall rules
-│   ├── variables.tf         # Terraform variables
-│   ├── outputs.tf           # Exported values
-│   ├── data.tf              # Data sources
-│   └── terraform.tfstate*   # Terraform state files
+│   ├── main.tf              # Calls modules and defines environment-specific resources
+│   ├── variables.tf         # Global variables for the root module
+│   ├── outputs.tf           # Global outputs for the root module
+│   ├── versions.tf          # Terraform and provider version constraints
+│   ├── terraform.tfvars     # Default variable values (not committed to VCS for sensitive data)
+│   └── modules/
+│       ├── vpc/             # Module for VPC and networking components
+│       ├── ec2-alb/         # Module for EC2, ALB, ASG, and related SGs
+│       └── rds/             # Module for RDS and its security group
 └── README.md                # This file
 ```
 
 ---
 
-##  Tools & Technologies
+## Tools & Technologies
 
 | Category        | Tools / Platforms                            |
 |----------------|-----------------------------------------------|
@@ -62,12 +61,12 @@ It follows GitOps and DevOps best practices using ArgoCD, Jenkins, Kubernetes, P
 | CI/CD           | Jenkins (Dockerized)                          |
 | Orchestration   | Kubernetes (Minikube / EC2 / EKS-ready)       |
 | Monitoring      | Prometheus · Grafana · Alertmanager           |
-| IaC             | Terraform (VPC, EC2, Security Groups)         |
+| IaC             | Terraform (modular with VPC, EC2, SGs, RDS)   |
 | Secrets         | Kubernetes Secrets + ConfigMaps               |
 
 ---
 
-##  ArgoCD Applications
+## ArgoCD Applications
 
 | App Name           | Path                       | Purpose                       |
 |--------------------|----------------------------|-------------------------------|
@@ -81,7 +80,7 @@ It follows GitOps and DevOps best practices using ArgoCD, Jenkins, Kubernetes, P
 
 ---
 
-##  CI/CD Pipelines
+## CI/CD Pipelines
 
 Both backend and frontend have Jenkins pipelines stored in:
 
@@ -101,7 +100,7 @@ Both backend and frontend have Jenkins pipelines stored in:
 
 ---
 
-##  Kubernetes Deployment
+## Kubernetes Deployment
 
 ```bash
 # Deploy core services manually
@@ -116,7 +115,7 @@ kubectl apply -f k8s/ingress.yaml
 
 ---
 
-##  Jenkins in Docker
+## Jenkins in Docker
 
 ```bash
 cd jenkins/
@@ -124,10 +123,9 @@ docker-compose up -d
 # Access Jenkins at: http://localhost:8081
 ```
 
-
 ---
 
-##  Infrastructure with Terraform (AWS)
+## Infrastructure with Terraform (AWS)
 
 Provision EC2 + VPC + security groups:
 
@@ -137,11 +135,9 @@ terraform init
 terraform apply
 ```
 
- 
-
 ---
 
-##  Monitoring Stack
+## Monitoring Stack
 
 - **Prometheus**: collects metrics (from Flask, Node Exporter)  
 - **Grafana**: visualizes trends and performance  
@@ -150,13 +146,7 @@ terraform apply
 
 ---
 
-##  Diagrams & Visuals
-
-
-
----
-
-##  Best Practices Followed
+## Best Practices Followed
 
 - GitOps with ArgoCD auto-sync
 - Separate Dev and Config repos
@@ -164,6 +154,3 @@ terraform apply
 - Clean Jenkins pipeline with versioning
 - Terraform-managed cloud resources
 - Real-time monitoring and alerting
-
----
-
