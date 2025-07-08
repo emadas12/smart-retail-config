@@ -124,7 +124,6 @@ docker-compose up -d
 # Access Jenkins at: http://localhost:8081
 ```
 
-Make sure to mount Docker and kubeconfig inside the container for full pipeline access.
 
 ---
 
