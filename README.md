@@ -9,7 +9,7 @@ It follows GitOps and DevOps best practices using ArgoCD, Jenkins, Kubernetes, P
 ## Repository Structure
 
 ```bash
-tree -L 2
+
 .
 ├── ArgoCD/                  # ArgoCD application definitions
 │   ├── backend-app.yaml
@@ -54,7 +54,7 @@ tree -L 2
 
 ---
 
-## ⚙️ Tools & Technologies
+##  Tools & Technologies
 
 | Category        | Tools / Platforms                            |
 |----------------|-----------------------------------------------|
@@ -67,7 +67,7 @@ tree -L 2
 
 ---
 
-## 🚀 ArgoCD Applications
+##  ArgoCD Applications
 
 | App Name           | Path                       | Purpose                       |
 |--------------------|----------------------------|-------------------------------|
@@ -81,7 +81,7 @@ tree -L 2
 
 ---
 
-## 🧪 CI/CD Pipelines
+##  CI/CD Pipelines
 
 Both backend and frontend have Jenkins pipelines stored in:
 
@@ -101,7 +101,7 @@ Both backend and frontend have Jenkins pipelines stored in:
 
 ---
 
-## ☸️ Kubernetes Deployment
+##  Kubernetes Deployment
 
 ```bash
 # Deploy core services manually
@@ -116,7 +116,7 @@ kubectl apply -f k8s/ingress.yaml
 
 ---
 
-## 📦 Jenkins in Docker
+##  Jenkins in Docker
 
 ```bash
 cd jenkins/
@@ -128,7 +128,7 @@ Make sure to mount Docker and kubeconfig inside the container for full pipeline 
 
 ---
 
-## 🌐 Infrastructure with Terraform (AWS)
+##  Infrastructure with Terraform (AWS)
 
 Provision EC2 + VPC + security groups:
 
@@ -138,11 +138,11 @@ terraform init
 terraform apply
 ```
 
-> 🔐 Remember to update your AWS credentials before applying.
+ 
 
 ---
 
-## 📊 Monitoring Stack
+##  Monitoring Stack
 
 - **Prometheus**: collects metrics (from Flask, Node Exporter)  
 - **Grafana**: visualizes trends and performance  
@@ -151,13 +151,13 @@ terraform apply
 
 ---
 
-## 📸 Diagrams & Visuals
+##  Diagrams & Visuals
 
-> You can insert diagrams under `assets/` here in the future (architecture.png, monitoring-flow.png, etc.)
+
 
 ---
 
-## ✅ Best Practices Followed
+##  Best Practices Followed
 
 - GitOps with ArgoCD auto-sync
 - Separate Dev and Config repos
@@ -168,6 +168,3 @@ terraform apply
 
 ---
 
-## License
-
-MIT © Rani Saed
