@@ -21,3 +21,15 @@ spec:
           env:
             - name: DATABASE_URL
               value: "postgresql://postgres:12345678@postgres:5432/shop_inventory"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 30

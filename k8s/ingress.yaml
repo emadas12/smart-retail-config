@@ -5,7 +5,7 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
-  ingressClassName: nginx      # הוסף שורה זו
+  ingressClassName: nginx     
   rules:
     - host: retail.local
       http:
