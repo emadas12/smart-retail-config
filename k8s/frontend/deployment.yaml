@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: rani19/gogo-main-frontend:latest
+          image: rani19/gogo-main-frontend:build-27
           ports:
             - containerPort: 80
           env:
