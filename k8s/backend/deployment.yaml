@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: rani19/backend:build-190
+          image: rani19/backend:build-216
           imagePullPolicy: Always
           ports:
             - containerPort: 5000
