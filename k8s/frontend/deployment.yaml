@@ -18,7 +18,7 @@ spec:
 <<<<<<< HEAD
           image: emadas/gogo-main-frontend:latest
 =======
-          image: rani19/gogo-main-frontend:build-33
+          image: emadas/gogo-main-frontend:build-33
 >>>>>>> partner/main
           ports:
             - containerPort: 80

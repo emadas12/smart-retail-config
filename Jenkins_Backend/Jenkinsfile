@@ -78,7 +78,7 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'rani19/backend'
+        IMAGE_NAME = 'emadas/backend'
         TAG = "build-${env.BUILD_NUMBER}"
         DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
         CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
