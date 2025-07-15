@@ -2,12 +2,13 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: prometheus-alerting-rules
-  namespace: prometheus
+  namespace: prometheus # Ensure this matches your Prometheus namespace
 data:
   alerting.rules.yml: |
     groups:
       - name: devops-project-alerts
         rules:
+          # ✅ KEEPING: HighRequestVolumeRate
           - alert: HighRequestVolumeRate
             expr: sum(rate(flask_http_request_total[1m])) > 1.66
             for: 30s
@@ -16,8 +17,9 @@ data:
               team: devops
             annotations:
               summary: "⚠️ High Request Rate"
-              description: "More than 100 requests/min detected."
+              description: "More than 100 requests/min detected across all backend instances."
 
+          # ✅ KEEPING: BackendServiceDown
           - alert: BackendServiceDown
             expr: up{job="flask-backend"} == 0
             for: 30s
@@ -26,14 +28,15 @@ data:
               team: backend
             annotations:
               summary: "🔥 Backend is Down"
-              description: "Prometheus cannot scrape the backend service."
+              description: "Prometheus cannot scrape the backend service (all instances are down)."
 
-          - alert: High5xxErrorRate
-            expr: rate(flask_http_request_total{status=~"5.."}[1m]) > 0.5
+          # ✅ ADDING: High404Rate (New and simplified)
+          - alert: High404Rate
+            expr: sum(rate(flask_http_request_total{status="404"}[1m])) > 0.1
             for: 30s
             labels:
-              severity: critical
-              team: backend
+              severity: warning
+              team: devops
             annotations:
-              summary: "🔥 5xx Error Rate is high"
-              description: "Over 0.5 5xx errors/sec. Check logs."
+              description: "More than 0.1 404 Not Found errors/second (approx. 6 errors/minute) detected across backend instances. This indicates broken links, misconfigured API calls, or scanning activity."
+              summary: "⚠️ High 404 Not Found Error Rate"

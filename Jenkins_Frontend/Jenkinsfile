@@ -2,6 +2,7 @@ pipeline {
     agent any
 
     environment {
+<<<<<<< HEAD
         IMAGE_NAME = 'emadas/gogo-main-frontend'
         TAG = "build-${env.BUILD_NUMBER}"
         DEV_REPO_URL = 'https://github.com/emadas12/smart-retail-dev.git'
@@ -9,6 +10,14 @@ pipeline {
         DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
         GIT_CREDENTIAL_ID = 'github-creds'
         SLACK_WEBHOOK = credentials('slack-webhook')
+=======
+        IMAGE_NAME = 'rani19/gogo-main-frontend'
+        TAG = "build-${env.BUILD_NUMBER}"
+        DEV_REPO_URL = 'https://github.com/RaniSaed/smart-retail-dev.git'
+        CONFIG_REPO_URL = 'https://github.com/RaniSaed/smart-retail-config.git'
+        DOCKER_CREDENTIALS_ID = 'docker-hub-creds'
+        SLACK_CREDENTIAL_ID = 'slack-webhook'
+>>>>>>> partner/main
     }
 
     options {
@@ -17,6 +26,7 @@ pipeline {
     }
 
     stages {
+<<<<<<< HEAD
         stage('📥 Clone Repos') {
             steps {
                 dir('dev') {
@@ -25,10 +35,17 @@ pipeline {
                 dir('config') {
                     git url: "${CONFIG_REPO_URL}", branch: 'main', credentialsId: 'github-creds'
 
+=======
+        stage('Clone Dev Repo') {
+            steps {
+                dir('dev') {
+                    git url: "${DEV_REPO_URL}", branch: 'main'
+>>>>>>> partner/main
                 }
             }
         }
 
+<<<<<<< HEAD
         stage('🧹 Lint + ✅ Test') {
             steps {
                 dir('dev/frontend') {
@@ -37,10 +54,17 @@ pipeline {
                         npx eslint src/
                         npm test -- --watchAll=false
                     '''
+=======
+        stage('Clone Config Repo') {
+            steps {
+                dir('config') {
+                    git url: "${CONFIG_REPO_URL}", branch: 'main'
+>>>>>>> partner/main
                 }
             }
         }
 
+<<<<<<< HEAD
         stage('🐳 Build & Push Image') {
             steps {
                 dir('dev') {
@@ -49,12 +73,28 @@ pipeline {
                             def image = docker.build("${IMAGE_NAME}:${TAG}", "-f frontend/Dockerfile frontend")
                             image.push()
                             image.push("latest")
+=======
+        stage('Check Frontend Changes') {
+            steps {
+                dir('dev') {
+                    script {
+                        def frontendChanged = sh(
+                            script: "git diff --name-only HEAD~1 HEAD | grep -q '^frontend/'",
+                            returnStatus: true
+                        ) == 0
+
+                        if (!frontendChanged) {
+                            echo "No changes in frontend code. Aborting..."
+                            currentBuild.result = 'ABORTED'
+                            error("No changes in frontend/")
+>>>>>>> partner/main
                         }
                     }
                 }
             }
         }
 
+<<<<<<< HEAD
         stage('✏️ Update K8s Deployment') {
             steps {
                 dir('config') {
@@ -67,18 +107,40 @@ pipeline {
                         git remote set-url origin https://${GIT_CREDENTIAL_ID}@github.com/emadas12/smart-retail-config.git
                         git push origin main || echo "Nothing to push"
                     """
+=======
+        stage('Build Docker Image') {
+            steps {
+                dir('dev') {
+                    script {
+                        echo "Building image ${IMAGE_NAME}:${TAG}"
+                        docker.build("${IMAGE_NAME}:${TAG}", "-f frontend/Dockerfile frontend")
+                    }
+>>>>>>> partner/main
                 }
             }
         }
 
+<<<<<<< HEAD
         stage('🚀 Deploy to Kubernetes') {
             steps {
                 dir('config') {
                     sh 'kubectl apply -f k8s/frontend/'
+=======
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    script {
+                        docker.withRegistry("https://index.docker.io/v1/", "${DOCKER_CREDENTIALS_ID}") {
+                            docker.image("${IMAGE_NAME}:${TAG}").push()
+                            docker.image("${IMAGE_NAME}:${TAG}").push("latest")
+                        }
+                    }
+>>>>>>> partner/main
                 }
             }
         }
 
+<<<<<<< HEAD
         stage('🔍 Health Check') {
             steps {
                 sh '''
@@ -90,12 +152,230 @@ pipeline {
                     fi
                     echo "✅ Frontend is healthy"
                 '''
+=======
+        stage('Update Deployment YAML') {
+            steps {
+                dir('config') {
+                    script {
+                        def filePath = "k8s/frontend/deployment.yaml"
+                        def newImage = "${IMAGE_NAME}:${TAG}"
+                        echo "Updating ${filePath} with new image: ${newImage}"
+                        sh """
+                            sed -i 's|image:.*|image: ${newImage}|' ${filePath}
+                        """
+                        sh "cat ${filePath}"
+                    }
+                }
+            }
+        }
+
+        stage('Commit & Push Changes') {
+            steps {
+                dir('config') {
+                    withCredentials([string(credentialsId: 'github-push-token', variable: 'GIT_TOKEN')]) {
+                        script {
+                            sh """
+                                git config user.email "rani.saed19@gmail.com"
+                                git config user.name "Rani Saed (CI/CD)"
+                                git add k8s/frontend/deployment.yaml
+                                if ! git diff --cached --quiet; then
+                                    git commit -m "Update frontend image to ${TAG}"
+                                    git remote set-url origin https://${GIT_TOKEN}@github.com/RaniSaed/smart-retail-config.git
+                                    git push origin main
+                                else
+                                    echo "No changes to commit"
+                                fi
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Health Check: Main Frontend (Post-Deployment)') {
+            steps {
+                script {
+                    echo "Checking main frontend health after deployment update..."
+                    def maxAttempts = 15
+                    def waitTime = 10
+                    def totalTimeout = maxAttempts * waitTime
+                    def healthy = false
+
+                    def frontendUrl = "http://localhost:3000"
+
+                    timeout(time: totalTimeout, unit: 'SECONDS') {
+                        for (int i = 1; i <= maxAttempts; i++) {
+                            echo "Attempt ${i}/${maxAttempts}: Curling ${frontendUrl}..."
+                            def healthCheckStatus = sh(
+                                script: "curl -s -f ${frontendUrl} || true",
+                                returnStatus: true
+                            )
+
+                            if (healthCheckStatus == 0) {
+                                echo "Main Frontend responded successfully on attempt ${i} (HTTP 2xx)!"
+                                healthy = true
+                                break
+                            } else {
+                                echo "Main Frontend not yet healthy or returned an error status (curl exit code: ${healthCheckStatus})."
+                                if (i < maxAttempts) {
+                                    sleep waitTime
+                                }
+                            }
+                        }
+
+                        if (!healthy) {
+                            echo "Main Frontend health check failed after ${maxAttempts} attempts and ${totalTimeout} seconds. This may indicate an issue with the main frontend or its dependencies. Proceeding with the pipeline, potentially to DR stage."
+                        } else {
+                            echo "Main Frontend is confirmed healthy."
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Frontend DR Failover & Sync') {
+            steps {
+                script {
+                    echo "Starting Frontend DR failover logic..."
+
+                    env.FRONTEND_DEPLOYMENT_STATUS = "UNKNOWN"
+                    env.FRONTEND_TEST_RESULT = "FAILURE"
+
+                    def activeBackendPort = "5001"
+                    def activeBackendName = "gogo-backend"
+
+                    def mainBackendHealthy = sh(script: "curl -s http://gogo-backend:5000/health | grep -q '\"status\":\"healthy\"' || true", returnStatus: true) == 0
+                    if (!mainBackendHealthy) {
+                         echo "Main Backend (gogo-backend:5000) is not healthy. Assuming DR Backend (gogo-dr-backend:5002) is active or will be activated."
+                         activeBackendPort = "5002"
+                         activeBackendName = "gogo-dr-backend"
+                         env.BACKEND_FOR_FRONTEND = "DR_BACKEND"
+                    } else {
+                        echo "Main Backend (gogo-backend:5000) is healthy. Frontend should connect to it."
+                        env.BACKEND_FOR_FRONTEND = "MAIN_BACKEND"
+                    }
+
+                    echo "Frontend will attempt to connect to: ${activeBackendName}:${activeBackendPort}"
+
+                    echo "Checking if Main Frontend container (gogo-main-frontend) is running..."
+                    def mainFrontendRunning = sh(
+                        script: "docker ps --filter 'name=gogo-main-frontend' --format '{{.Names}}'",
+                        returnStdout: true
+                    ).trim()
+
+                    if (mainFrontendRunning == 'gogo-main-frontend') {
+                        echo "Main Frontend container (gogo-main-frontend) is running. Checking its health with active backend."
+                        def mainFrontendHealthy = sh(
+                            script: "curl -s http://localhost:3000 || true",
+                            returnStatus: true
+                        )
+
+                        if (mainFrontendHealthy == 0) {
+                            echo "Main Frontend (3000) is healthy and assumed to be connected to the active backend."
+                            env.FRONTEND_DEPLOYMENT_STATUS = "Main Active"
+                            sh "docker stop gogo-dr-frontend || true"
+                            echo "Ensured DR Frontend (gogo-dr-frontend) is stopped."
+                        } else {
+                            echo "Main Frontend (3000) is running but not healthy. Initiating failover to DR Frontend."
+                            sh "docker stop gogo-main-frontend || true"
+                            echo "Stopped Main Frontend (gogo-main-frontend)."
+
+                            echo "Starting DR Frontend (gogo-dr-frontend)..."
+                            sh "docker start gogo-dr-frontend"
+
+                            def drFrontendHealthy = sh(
+                                script: "curl -s http://localhost:3002 || true",
+                                returnStatus: true
+                            )
+                            if (drFrontendHealthy == 0) {
+                                echo "DR Frontend is healthy on 3002!"
+                                env.FRONTEND_DEPLOYMENT_STATUS = "DR Activated & Healthy (3002)"
+                            } else {
+                                echo "DR Frontend activated but Health Check Failed (3002)."
+                                env.FRONTEND_DEPLOYMENT_STATUS = "DR Activated but Health Check Failed (3002)"
+                            }
+                        }
+
+                    } else {
+                        echo "Main Frontend container (gogo-main-frontend) is NOT running. Activating DR Frontend (gogo-dr-frontend) (on 3002)."
+                        sh "docker stop gogo-main-frontend || true"
+                        echo "Starting DR Frontend (gogo-dr-frontend)..."
+                        sh "docker start gogo-dr-frontend"
+
+                        def drFrontendHealthy = sh(
+                            script: "curl -s http://localhost:3002 || true",
+                            returnStatus: true
+                        )
+                        if (drFrontendHealthy == 0) {
+                            echo "DR Frontend is healthy on 3002!"
+                            env.FRONTEND_DEPLOYMENT_STATUS = "DR Activated & Healthy (3002)"
+                        } else {
+                            echo "DR Frontend activated but Health Check Failed (3002)."
+                            env.FRONTEND_DEPLOYMENT_STATUS = "DR Activated but Health Check Failed (3002)"
+                        }
+                    }
+
+                    if (env.FRONTEND_DEPLOYMENT_STATUS.contains("Active") || env.FRONTEND_DEPLOYMENT_STATUS.contains("Activated & Healthy")) {
+                        env.FRONTEND_TEST_RESULT = "SUCCESS"
+                    } else {
+                        env.FRONTEND_TEST_RESULT = "FAILURE"
+                    }
+                }
+            }
+        }
+
+
+        stage('Generate Frontend Readiness Reports') {
+            steps {
+                script {
+                    echo "--- Frontend Readiness Report ---"
+                    echo "Build Number: ${env.BUILD_NUMBER}"
+                    echo "Build URL: ${env.BUILD_URL}"
+                    echo "Timestamp: ${new Date().format('yyyy-MM-dd HH:mm:ss')}"
+                    echo "---------------------------"
+                    echo "Frontend Test Result: **${env.FRONTEND_TEST_RESULT}**"
+                    echo "Frontend Deployment Status: ${env.FRONTEND_DEPLOYMENT_STATUS}"
+                    echo "Backend Connected to Frontend: ${env.BACKEND_FOR_FRONTEND ?: 'Not Determined'}"
+                    echo "---------------------------"
+
+                    def reportContent = """
+                        Frontend Readiness Report
+                        -------------------
+                        Build Number: ${env.BUILD_NUMBER}
+                        Build URL: ${env.BUILD_URL}
+                        Timestamp: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
+                        -------------------
+                        Frontend Test Result: ${env.FRONTEND_TEST_RESULT}
+                        Frontend Deployment Status: ${env.FRONTEND_DEPLOYMENT_STATUS}
+                        Backend Connected to Frontend: ${env.BACKEND_FOR_FRONTEND ?: 'Not Determined'}
+                        -------------------
+                    """.stripIndent()
+
+                    writeFile file: 'frontend-readiness-report.txt', text: reportContent
+                    archiveArtifacts artifacts: 'frontend-readiness-report.txt', fingerprint: true
+
+                    withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                        def slackMessage = ""
+                        if (env.FRONTEND_TEST_RESULT == "SUCCESS") {
+                            slackMessage = "Frontend Readiness Test Passed!\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nDeployment: ${env.FRONTEND_DEPLOYMENT_STATUS}\\nBackend Used: ${env.BACKEND_FOR_FRONTEND ?: 'N/A'}"
+                        } else {
+                            slackMessage = "Frontend Readiness Test FAILED!\\nBuild: <${env.BUILD_URL}|#${env.BUILD_NUMBER}>\\nDeployment: ${env.FRONTEND_DEPLOYMENT_STATUS}\\nBackend Used: ${env.BACKEND_FOR_FRONTEND ?: 'N/A'}\\nCheck logs for details."
+                        }
+
+                        sh """
+                            curl -X POST -H 'Content-type: application/json' \
+                            --data '{"text": "${slackMessage}"}' $SLACK_WEBHOOK
+                        """
+                    }
+                }
+>>>>>>> partner/main
             }
         }
     }
 
     post {
         success {
+<<<<<<< HEAD
             sh """
                 curl -X POST -H 'Content-type: application/json' \
                 --data '{"text": "✅ *Frontend deployed*: ${TAG}"}' \
@@ -111,3 +391,35 @@ pipeline {
         }
     }
 }
+=======
+            echo "Frontend image pushed and deployment updated."
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "Frontend CI/CD succeeded — ${TAG} deployed & healthy!"}' $SLACK_WEBHOOK
+                """
+            }
+        }
+
+        aborted {
+            echo "Pipeline aborted (no frontend changes)"
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "Frontend pipeline aborted — no changes detected."}' $SLACK_WEBHOOK
+                """
+            }
+        }
+
+        failure {
+            echo "Pipeline failed"
+            withCredentials([string(credentialsId: "${SLACK_CREDENTIAL_ID}", variable: 'SLACK_WEBHOOK')]) {
+                sh """
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text": "Frontend pipeline failed. Check Jenkins logs."}' $SLACK_WEBHOOK
+                """
+            }
+        }
+    }
+}
+>>>>>>> partner/main

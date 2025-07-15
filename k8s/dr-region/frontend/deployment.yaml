@@ -20,7 +20,11 @@ spec:
     spec:
       containers:
         - name: frontend
+<<<<<<< HEAD
           image: emadas/gogo-main-frontend:latest
+=======
+          image: rani19/gogo-main-frontend:latest
+>>>>>>> partner/main
           ports:
             - containerPort: 80
           env:

@@ -1,0 +1,29 @@
+Manifest-Version: 1.0
+Created-By: Maven Archiver 3.6.0
+Build-Jdk-Spec: 17
+Specification-Title: GitHub Authentication plugin
+Specification-Version: 0.0
+Implementation-Title: GitHub Authentication plugin
+Implementation-Version: 651.v135e939e8b_60
+Group-Id: org.jenkins-ci.plugins
+Artifact-Id: github-oauth
+Short-Name: github-oauth
+Long-Name: GitHub Authentication plugin
+Url: https://github.com/jenkinsci/github-oauth-plugin
+Compatible-Since-Version: 0.3
+Plugin-Version: 651.v135e939e8b_60
+Hudson-Version: 2.479.3
+Jenkins-Version: 2.479.3
+Plugin-Dependencies: caffeine-api:3.2.0-161.v691ef352cee1,workflow-multi
+ branch:803.v08103b_87c280,git:5.7.0,github-api:1.321-478.vc9ce627ce001,
+ github-branch-source:1810.v913311241fa_9,jackson2-api:2.17.0-389.va_5c7
+ e45cd806,mailer:489.vd4b_25144138f,matrix-project:845.vffd7fa_f27555
+Plugin-Developers: Sam Gleske:sag47:sam.mxracer@gmail.com
+Plugin-License-Name: MIT License
+Plugin-License-Url: https://opensource.org/licenses/MIT
+Plugin-ScmConnection: scm:git:https://github.com/jenkinsci/github-oauth-
+ plugin.git
+Plugin-ScmTag: 135e939e8b604aaa1edb6d26e2e175caa35cdb1e
+Plugin-ScmUrl: https://github.com/jenkinsci/github-oauth-plugin
+Implementation-Build: 135e939e8b604aaa1edb6d26e2e175caa35cdb1e
+
